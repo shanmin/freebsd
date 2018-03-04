@@ -516,7 +516,7 @@ table_modify(ipfw_obj_header *oh, int ac, char *av[])
 			ac--; av++;
 			break;
 		default:
-			errx(EX_USAGE, "cmd is not supported for modificatiob");
+			errx(EX_USAGE, "cmd is not supported for modification");
 		}
 	}
 
@@ -885,6 +885,8 @@ table_do_modify_record(int cmd, ipfw_obj_header *oh,
 
 	sz += sizeof(*oh);
 	error = do_get3(cmd, &oh->opheader, &sz);
+	if (error != 0)
+		error = errno;
 	tent = (ipfw_obj_tentry *)(ctlv + 1);
 	/* Copy result back to provided buffer */
 	memcpy(tent_base, ctlv + 1, sizeof(*tent) * count);

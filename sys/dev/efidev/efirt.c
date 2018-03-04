@@ -114,6 +114,11 @@ efi_init(void)
 			printf("EFI systbl not available\n");
 		return (0);
 	}
+	if (!PMAP_HAS_DMAP) {
+		if (bootverbose)
+			printf("EFI systbl requires direct map\n");
+		return (0);
+	}
 	efi_systbl = (struct efi_systbl *)PHYS_TO_DMAP(efi_systbl_phys);
 	if (efi_systbl->st_hdr.th_sig != EFI_SYSTBL_SIG) {
 		efi_systbl = NULL;
@@ -189,7 +194,6 @@ efi_enter(void)
 {
 	struct thread *td;
 	pmap_t curpmap;
-	int error;
 
 	if (efi_runtime == NULL)
 		return (ENXIO);
@@ -197,12 +201,7 @@ efi_enter(void)
 	curpmap = &td->td_proc->p_vmspace->vm_pmap;
 	PMAP_LOCK(curpmap);
 	mtx_lock(&efi_lock);
-	error = fpu_kern_enter(td, NULL, FPU_KERN_NOCTX);
-	if (error != 0) {
-		PMAP_UNLOCK(curpmap);
-		return (error);
-	}
-
+	fpu_kern_enter(td, NULL, FPU_KERN_NOCTX);
 	return (efi_arch_enter());
 }
 
@@ -242,7 +241,7 @@ efi_get_table(struct uuid *uuid, void **ptr)
 }
 
 static int
-efi_get_time_locked(struct efi_tm *tm)
+efi_get_time_locked(struct efi_tm *tm, struct efi_tmcap *tmcap)
 {
 	efi_status status;
 	int error;
@@ -251,7 +250,7 @@ efi_get_time_locked(struct efi_tm *tm)
 	error = efi_enter();
 	if (error != 0)
 		return (error);
-	status = efi_runtime->rt_gettime(tm, NULL);
+	status = efi_runtime->rt_gettime(tm, tmcap);
 	efi_leave();
 	error = efi_status_to_errno(status);
 	return (error);
@@ -265,7 +264,21 @@ efi_get_time(struct efi_tm *tm)
 	if (efi_runtime == NULL)
 		return (ENXIO);
 	EFI_TIME_LOCK()
-	error = efi_get_time_locked(tm);
+	error = efi_get_time_locked(tm, NULL);
+	EFI_TIME_UNLOCK()
+	return (error);
+}
+
+int
+efi_get_time_capabilities(struct efi_tmcap *tmcap)
+{
+	struct efi_tm dummy;
+	int error;
+
+	if (efi_runtime == NULL)
+		return (ENXIO);
+	EFI_TIME_LOCK()
+	error = efi_get_time_locked(&dummy, tmcap);
 	EFI_TIME_UNLOCK()
 	return (error);
 }
