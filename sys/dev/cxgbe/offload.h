@@ -66,9 +66,10 @@ struct stid_region {
 };
 
 /*
- * Max # of ATIDs.  The absolute HW max is 16K but we keep it lower.
+ * Max # of ATIDs.  The absolute HW max is 14b (enough for 16K) but we reserve
+ * the upper 3b for use as a cookie to demux the reply.
  */
-#define MAX_ATIDS 8192U
+#define MAX_ATIDS 2048U
 
 union aopen_entry {
 	void *data;
@@ -151,8 +152,12 @@ struct tom_tunables {
 	int sndbuf;
 	int ddp;
 	int rx_coalesce;
+	int tls;
+	int *tls_rx_ports;
+	int num_tls_rx_ports;
 	int tx_align;
 	int tx_zcopy;
+	int cop_managed_offloading;
 };
 /* iWARP driver tunables */
 struct iw_tunables {

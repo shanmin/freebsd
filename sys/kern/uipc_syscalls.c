@@ -37,7 +37,6 @@ __FBSDID("$FreeBSD$");
 #include "opt_capsicum.h"
 #include "opt_inet.h"
 #include "opt_inet6.h"
-#include "opt_compat.h"
 #include "opt_ktrace.h"
 
 #include <sys/param.h>
@@ -58,6 +57,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/socket.h>
 #include <sys/socketvar.h>
 #include <sys/syscallsubr.h>
+#include <sys/uio.h>
 #ifdef KTRACE
 #include <sys/ktrace.h>
 #endif
@@ -186,6 +186,11 @@ kern_bindat(struct thread *td, int dirfd, int fd, struct sockaddr *sa)
 	struct file *fp;
 	cap_rights_t rights;
 	int error;
+
+#ifdef CAPABILITY_MODE
+	if (IN_CAPABILITY_MODE(td) && (dirfd == AT_FDCWD))
+		return (ECAPMODE);
+#endif
 
 	AUDIT_ARG_FD(fd);
 	AUDIT_ARG_SOCKADDR(td, dirfd, sa);
@@ -482,6 +487,11 @@ kern_connectat(struct thread *td, int dirfd, int fd, struct sockaddr *sa)
 	struct file *fp;
 	cap_rights_t rights;
 	int error, interrupted = 0;
+
+#ifdef CAPABILITY_MODE
+	if (IN_CAPABILITY_MODE(td) && (dirfd == AT_FDCWD))
+		return (ECAPMODE);
+#endif
 
 	AUDIT_ARG_FD(fd);
 	AUDIT_ARG_SOCKADDR(td, dirfd, sa);

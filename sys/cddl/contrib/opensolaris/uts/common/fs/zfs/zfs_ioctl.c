@@ -3807,6 +3807,29 @@ zfs_ioc_channel_program(const char *poolname, nvlist_t *innvl,
 }
 
 /*
+ * innvl: unused
+ * outnvl: empty
+ */
+/* ARGSUSED */
+static int
+zfs_ioc_pool_checkpoint(const char *poolname, nvlist_t *innvl, nvlist_t *outnvl)
+{
+	return (spa_checkpoint(poolname));
+}
+
+/*
+ * innvl: unused
+ * outnvl: empty
+ */
+/* ARGSUSED */
+static int
+zfs_ioc_pool_discard_checkpoint(const char *poolname, nvlist_t *innvl,
+    nvlist_t *outnvl)
+{
+	return (spa_checkpoint_discard(poolname));
+}
+
+/*
  * inputs:
  * zc_name		name of dataset to destroy
  * zc_objset_type	type of objset
@@ -5115,14 +5138,14 @@ zfs_ioc_userspace_upgrade(zfs_cmd_t *zc)
 			 * objset needs to be closed & reopened (to grow the
 			 * objset_phys_t).  Suspend/resume the fs will do that.
 			 */
-			dsl_dataset_t *ds;
+			dsl_dataset_t *ds, *newds;
 
 			ds = dmu_objset_ds(zfsvfs->z_os);
 			error = zfs_suspend_fs(zfsvfs);
 			if (error == 0) {
-				dmu_objset_refresh_ownership(zfsvfs->z_os,
+				dmu_objset_refresh_ownership(ds, &newds,
 				    zfsvfs);
-				error = zfs_resume_fs(zfsvfs, ds);
+				error = zfs_resume_fs(zfsvfs, newds);
 			}
 		}
 		if (error == 0)
@@ -6086,6 +6109,15 @@ zfs_ioctl_init(void)
 	    POOL_NAME, POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE,
 	    B_TRUE);
 
+	zfs_ioctl_register("zpool_checkpoint", ZFS_IOC_POOL_CHECKPOINT,
+	    zfs_ioc_pool_checkpoint, zfs_secpolicy_config, POOL_NAME,
+	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
+
+	zfs_ioctl_register("zpool_discard_checkpoint",
+	    ZFS_IOC_POOL_DISCARD_CHECKPOINT, zfs_ioc_pool_discard_checkpoint,
+	    zfs_secpolicy_config, POOL_NAME,
+	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
+
 	/* IOCTLS that use the legacy function signature */
 
 	zfs_ioctl_register_legacy(ZFS_IOC_POOL_FREEZE, zfs_ioc_pool_freeze,
@@ -6408,6 +6440,10 @@ zfsdev_ioctl(struct cdev *dev, u_long zcmd, caddr_t arg, int flag,
 			cflag = ZFS_CMD_COMPAT_V28;
 			break;
 		case sizeof(zfs_cmd_v15_t):
+			if (cmd >= sizeof(zfs_ioctl_v15_to_v28) /
+			    sizeof(zfs_ioctl_v15_to_v28[0]))
+				return (EINVAL);
+
 			cflag = ZFS_CMD_COMPAT_V15;
 			vecnum = zfs_ioctl_v15_to_v28[cmd];
 
