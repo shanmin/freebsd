@@ -1020,7 +1020,11 @@ init_secondary_tail(void)
 	smp_cpus++;
 
 	CTR1(KTR_SMP, "SMP: AP CPU #%d Launched", cpuid);
-	printf("SMP: AP CPU #%d Launched!\n", cpuid);
+	if (bootverbose)
+		printf("SMP: AP CPU #%d Launched!\n", cpuid);
+	else
+		printf("%s%d%s", smp_cpus == 2 ? "Launching APs: " : "",
+		    cpuid, smp_cpus == mp_ncpus ? "\n" : " ");
 
 	/* Determine if we are a logical CPU. */
 	if (cpu_info[PCPU_GET(apic_id)].cpu_hyperthread)
@@ -1453,8 +1457,6 @@ cpususpend_handler(void)
 		 */
 		wbinvd();
 	} else {
-		/* Indicate that we have restarted and restored the context. */
-		CPU_CLR_ATOMIC(cpu, &suspended_cpus);
 #ifdef __amd64__
 		fpuresume(susppcbs[cpu]->sp_fpususpend);
 #else
@@ -1464,6 +1466,9 @@ cpususpend_handler(void)
 		initializecpu();
 		PCPU_SET(switchtime, 0);
 		PCPU_SET(switchticks, ticks);
+
+		/* Indicate that we have restarted and restored the context. */
+		CPU_CLR_ATOMIC(cpu, &suspended_cpus);
 	}
 
 	/* Wait for resume directive */
