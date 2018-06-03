@@ -794,7 +794,6 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 	int error;
 
 	KASSERT(laddr != NULL, ("%s: laddr NULL", __func__));
-
 	/*
 	 * Bypass source address selection and use the primary jail IP
 	 * if requested.
@@ -827,15 +826,18 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 	 * network and try to find a corresponding interface to take
 	 * the source address from.
 	 */
+	NET_EPOCH_ENTER();
 	if (sro.ro_rt == NULL || sro.ro_rt->rt_ifp == NULL) {
 		struct in_ifaddr *ia;
 		struct ifnet *ifp;
 
 		ia = ifatoia(ifa_ifwithdstaddr((struct sockaddr *)sin,
 					inp->inp_socket->so_fibnum));
-		if (ia == NULL)
+		if (ia == NULL) {
 			ia = ifatoia(ifa_ifwithnet((struct sockaddr *)sin, 0,
 						inp->inp_socket->so_fibnum));
+
+		}
 		if (ia == NULL) {
 			error = ENETUNREACH;
 			goto done;
@@ -843,12 +845,10 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 
 		if (cred == NULL || !prison_flag(cred, PR_IP4)) {
 			laddr->s_addr = ia->ia_addr.sin_addr.s_addr;
-			ifa_free(&ia->ia_ifa);
 			goto done;
 		}
 
 		ifp = ia->ia_ifp;
-		ifa_free(&ia->ia_ifa);
 		ia = NULL;
 		IF_ADDR_RLOCK(ifp);
 		CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
@@ -964,7 +964,6 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 				goto done;
 			}
 			laddr->s_addr = ia->ia_addr.sin_addr.s_addr;
-			ifa_free(&ia->ia_ifa);
 			goto done;
 		}
 
@@ -973,7 +972,6 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 			struct ifnet *ifp;
 
 			ifp = ia->ia_ifp;
-			ifa_free(&ia->ia_ifa);
 			ia = NULL;
 			IF_ADDR_RLOCK(ifp);
 			CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
@@ -1002,6 +1000,7 @@ in_pcbladdr(struct inpcb *inp, struct in_addr *faddr, struct in_addr *laddr,
 	}
 
 done:
+	NET_EPOCH_EXIT();
 	if (sro.ro_rt != NULL)
 		RTFREE(sro.ro_rt);
 	return (error);
@@ -1314,6 +1313,28 @@ in_pcbrele(struct inpcb *inp)
 	return (in_pcbrele_wlocked(inp));
 }
 
+void
+in_pcblist_rele_rlocked(epoch_context_t ctx)
+{
+	struct in_pcblist *il;
+	struct inpcb *inp;
+	struct inpcbinfo *pcbinfo;
+	int i, n;
+
+	il = __containerof(ctx, struct in_pcblist, il_epoch_ctx);
+	pcbinfo = il->il_pcbinfo;
+	n = il->il_count;
+	INP_INFO_WLOCK(pcbinfo);
+	for (i = 0; i < n; i++) {
+		inp = il->il_inp_list[i];
+		INP_RLOCK(inp);
+		if (!in_pcbrele_rlocked(inp))
+			INP_RUNLOCK(inp);
+	}
+	INP_INFO_WUNLOCK(pcbinfo);
+	free(il, M_TEMP);
+}
+
 /*
  * Unconditionally schedule an inpcb to be freed by decrementing its
  * reference count, which should occur only after the inpcb has been detached
@@ -1382,18 +1403,14 @@ in_pcbfree(struct inpcb *inp)
 #ifdef MAC
 	mac_inpcb_destroy(inp);
 #endif
-	if (!in_pcbrele_wlocked(inp))
-		INP_WUNLOCK(inp);
-#if defined(INET) && defined(INET6)
-	if (imo == NULL && im6o == NULL)
-		return;
-#endif
 #ifdef INET6
-	ip6_freemoptions(im6o, pcbinfo);
+	ip6_freemoptions(im6o);
 #endif
 #ifdef INET
-	inp_freemoptions(imo, pcbinfo);
+	inp_freemoptions(imo);
 #endif
+	if (!in_pcbrele_wlocked(inp))
+		INP_WUNLOCK(inp);
 }
 
 /*
@@ -1545,6 +1562,8 @@ in_pcbpurgeif0(struct inpcbinfo *pcbinfo, struct ifnet *ifp)
 			/*
 			 * Drop multicast group membership if we joined
 			 * through the interface being detached.
+			 *
+			 * XXX This can all be deferred to an epoch_call
 			 */
 			for (i = 0, gap = 0; i < imo->imo_num_memberships;
 			    i++) {

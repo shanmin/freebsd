@@ -205,6 +205,11 @@ ENTRY(memmove)
 	movsq
 	movq	%rdx,%rcx
 	andq	$7,%rcx				/* any bytes left? */
+	jne	2f
+	movq	%r9,%rax
+	POP_FRAME_POINTER
+	ret
+2:
 	rep
 	movsb
 	movq	%r9,%rax
@@ -248,6 +253,10 @@ ENTRY(memcpy)
 	movsq
 	movq	%rdx,%rcx
 	andq	$7,%rcx				/* any bytes left? */
+	jne	1f
+	POP_FRAME_POINTER
+	ret
+1:
 	rep
 	movsb
 	POP_FRAME_POINTER
@@ -269,6 +278,11 @@ ENTRY(memset)
 	stosq
 	movq	%rdx,%rcx
 	andq	$7,%rcx
+	jne	1f
+	movq	%r9,%rax
+	POP_FRAME_POINTER
+	ret
+1:
 	rep
 	stosb
 	movq	%r9,%rax
@@ -281,26 +295,12 @@ END(memset)
  */
 ENTRY(pagecopy)
 	PUSH_FRAME_POINTER
-	movq	$-PAGE_SIZE,%rax
-	movq	%rax,%rdx
-	subq	%rax,%rdi
-	subq	%rax,%rsi
-1:
-	prefetchnta (%rdi,%rax)
-	addq	$64,%rax
-	jne	1b
-2:
-	movq	(%rdi,%rdx),%rax
-	movnti	%rax,(%rsi,%rdx)
-	movq	8(%rdi,%rdx),%rax
-	movnti	%rax,8(%rsi,%rdx)
-	movq	16(%rdi,%rdx),%rax
-	movnti	%rax,16(%rsi,%rdx)
-	movq	24(%rdi,%rdx),%rax
-	movnti	%rax,24(%rsi,%rdx)
-	addq	$32,%rdx
-	jne	2b
-	sfence
+	movq	$PAGE_SIZE/8,%rcx
+	movq	%rdi,%r9
+	movq	%rsi,%rdi
+	movq	%r9,%rsi
+	rep
+	movsq
 	POP_FRAME_POINTER
 	ret
 END(pagecopy)
@@ -372,6 +372,7 @@ ENTRY(copyout)
 	movsq
 	movb	%dl,%cl
 	andb	$7,%cl
+	je	done_copyout
 	rep
 	movsb
 
@@ -420,6 +421,7 @@ ENTRY(copyin)
 	movsq
 	movb	%al,%cl
 	andb	$7,%cl				/* copy remaining bytes */
+	je	done_copyin
 	rep
 	movsb
 
@@ -958,8 +960,9 @@ ENTRY(handle_ibrs_entry)
 	cmpb	$0,hw_ibrs_active(%rip)
 	je	1f
 	movl	$MSR_IA32_SPEC_CTRL,%ecx
-	movl	$(IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP),%eax
-	movl	$(IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP)>>32,%edx
+	rdmsr
+	orl	$(IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP),%eax
+	orl	$(IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP)>>32,%edx
 	wrmsr
 	movb	$1,PCPU(IBPB_SET)
 	testl	$CPUID_STDEXT_SMEP,cpu_stdext_feature(%rip)
@@ -972,8 +975,9 @@ ENTRY(handle_ibrs_exit)
 	cmpb	$0,PCPU(IBPB_SET)
 	je	1f
 	movl	$MSR_IA32_SPEC_CTRL,%ecx
-	xorl	%eax,%eax
-	xorl	%edx,%edx
+	rdmsr
+	andl	$~(IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP),%eax
+	andl	$~((IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP)>>32),%edx
 	wrmsr
 	movb	$0,PCPU(IBPB_SET)
 1:	ret
@@ -987,8 +991,9 @@ ENTRY(handle_ibrs_exit_rs)
 	pushq	%rdx
 	pushq	%rcx
 	movl	$MSR_IA32_SPEC_CTRL,%ecx
-	xorl	%eax,%eax
-	xorl	%edx,%edx
+	rdmsr
+	andl	$~(IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP),%eax
+	andl	$~((IA32_SPEC_CTRL_IBRS|IA32_SPEC_CTRL_STIBP)>>32),%edx
 	wrmsr
 	popq	%rcx
 	popq	%rdx
