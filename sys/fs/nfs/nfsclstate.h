@@ -94,6 +94,7 @@ struct nfsclds {
 #define	NFSCLDS_MDS		0x0002
 #define	NFSCLDS_DS		0x0004
 #define	NFSCLDS_CLOSED		0x0008
+#define	NFSCLDS_SAMECONN	0x0010
 
 struct nfsclclient {
 	LIST_ENTRY(nfsclclient) nfsc_list;
@@ -340,6 +341,9 @@ struct nfsclrecalllayout {
 	int				nfsrecly_recalltype;
 	uint32_t			nfsrecly_iomode;
 	uint32_t			nfsrecly_stateseqid;
+	uint32_t			nfsrecly_stat;
+	uint32_t			nfsrecly_op;
+	char				nfsrecly_devid[NFSX_V4DEVICEID];
 };
 
 /*

@@ -532,9 +532,6 @@ thread_exit(void)
 	SDT_PROBE0(proc, , , lwp__exit);
 	KASSERT(TAILQ_EMPTY(&td->td_sigqueue.sq_list), ("signal pending"));
 
-#ifdef AUDIT
-	AUDIT_SYSCALL_EXIT(0, td);
-#endif
 	/*
 	 * drop FPU & debug register state storage, or any other
 	 * architecture specific resources that
@@ -589,7 +586,8 @@ thread_exit(void)
 	if (PMC_PROC_IS_USING_PMCS(td->td_proc)) {
 		PMC_SWITCH_CONTEXT(td, PMC_FN_CSW_OUT);
 		PMC_CALL_HOOK_UNLOCKED(td, PMC_FN_THR_EXIT, NULL);
-	}
+	} else if (PMC_SYSTEM_SAMPLING_ACTIVE())
+		PMC_CALL_HOOK_UNLOCKED(td, PMC_FN_THR_EXIT_LOG, NULL);
 #endif
 	PROC_UNLOCK(p);
 	PROC_STATLOCK(p);
