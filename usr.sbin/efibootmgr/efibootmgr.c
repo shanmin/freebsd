@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2017 Netflix, Inc.
+ * Copyright (c) 2017-2018 Netflix, Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -82,6 +82,7 @@ typedef struct _bmgr_opts {
 	bool    delete_bootnext;
 	bool    del_timeout;
 	bool    dry_run;
+	bool	has_bootnum;
 	bool    once;
 	int	cp_src;
 	bool    set_active;
@@ -93,15 +94,16 @@ typedef struct _bmgr_opts {
 } bmgr_opts_t;
 
 static struct option lopts[] = {
-	{"activate", required_argument, NULL, 'a'},
-	{"bootnext", required_argument, NULL, 'n'}, /* set bootnext */
+	{"activate", no_argument, NULL, 'a'},
+	{"bootnext", no_argument, NULL, 'n'}, /* set bootnext */
+	{"bootnum", required_argument, NULL, 'b'},
 	{"bootorder", required_argument, NULL, 'o'}, /* set order */
 	{"copy", required_argument, NULL, 'C'},		/* Copy boot method */
 	{"create", no_argument, NULL, 'c'},
-	{"deactivate", required_argument, NULL, 'A'},
+	{"deactivate", no_argument, NULL, 'A'},
 	{"del-timout", no_argument, NULL, 'T'},
-	{"delete", required_argument, NULL, 'B'},
-	{"delete-bootnext", required_argument, NULL, 'N'},
+	{"delete", no_argument, NULL, 'B'},
+	{"delete-bootnext", no_argument, NULL, 'N'},
 	{"dry-run", no_argument, NULL, 'D'},
 	{"env", required_argument, NULL, 'e'},
 	{"help", no_argument, NULL, 'h'},
@@ -169,41 +171,42 @@ set_bootvar(const char *name, uint8_t *data, size_t size)
 
 
 #define USAGE \
-	"   [-aAnNB Bootvar] [-t timeout] [-T] [-o bootorder] [-O] [--verbose] [--help] \n\
-  [-c -l loader [-k kernel ] [-L label] [--dry-run]]"
+	"   [-aAnB -b bootnum] [-N] [-t timeout] [-T] [-o bootorder] [-O] [--verbose] [--help]\n\
+  [-c -l loader [-k kernel] [-L label] [--dry-run] [-b bootnum]]"
 
 #define CREATE_USAGE \
-	"       efibootmgr -c -l loader [-k kernel] [-L label] [--dry-run]"
+	"       efibootmgr -c -l loader [-k kernel] [-L label] [--dry-run] [-b bootnum] [-a]"
 #define ORDER_USAGE \
 	"       efibootmgr -o bootvarnum1,bootvarnum2,..."
 #define TIMEOUT_USAGE \
 	"       efibootmgr -t seconds"
 #define DELETE_USAGE \
-	"       efibootmgr -B bootvarnum"
+	"       efibootmgr -B -b bootnum"
 #define ACTIVE_USAGE \
-	"       efibootmgr [-a | -A] bootvarnum"
+	"       efibootmgr [-a | -A] -b bootnum"
 #define BOOTNEXT_USAGE \
-	"       efibootmgr [-n | -N] bootvarnum"
+	"       efibootmgr [-n | -N] -b bootnum"
 
 static void
 parse_args(int argc, char *argv[])
 {
 	int ch;
 
-	while ((ch = getopt_long(argc, argv, "A:a:B:C:cDe:hk:L:l:Nn:Oo:Tt:v",
+	while ((ch = getopt_long(argc, argv, "AaBb:C:cDe:hk:L:l:NnOo:Tt:v",
 		    lopts, NULL)) != -1) {
 		switch (ch) {
 		case 'A':
 			opts.set_inactive = true;
-			opts.bootnum = strtoul(optarg, NULL, 16);
 			break;
 		case 'a':
 			opts.set_active = true;
+			break;
+		case 'b':
+			opts.has_bootnum = true;
 			opts.bootnum = strtoul(optarg, NULL, 16);
 			break;
 		case 'B':
 			opts.delete = true;
-			opts.bootnum = strtoul(optarg, NULL, 16);
 			break;
 		case 'C':
 			opts.copy = true;
@@ -240,7 +243,6 @@ parse_args(int argc, char *argv[])
 			break;
 		case 'n':
 			opts.set_bootnext = true;
-			opts.bootnum = strtoul(optarg, NULL, 16);
 			break;
 		case 'O':
 			opts.once = true;
@@ -266,14 +268,18 @@ parse_args(int argc, char *argv[])
 			errx(1, "%s",CREATE_USAGE);
 		return;
 	}
-	if (opts.set_bootnext && !(opts.bootnum))
-		errx(1, "%s", BOOTNEXT_USAGE);
-
-	if ((opts.set_active ||  opts.set_inactive) && !(opts.bootnum))
-		errx(1, "%s", ACTIVE_USAGE);
 
 	if (opts.order && !(opts.order))
 		errx(1, "%s", ORDER_USAGE);
+
+	if ((opts.set_inactive || opts.set_active) && !opts.has_bootnum)
+		errx(1, "%s", ACTIVE_USAGE);
+
+	if (opts.delete && !opts.has_bootnum)
+		errx(1, "%s", DELETE_USAGE);
+
+	if (opts.set_bootnext && !opts.has_bootnum)
+		errx(1, "%s", BOOTNEXT_USAGE);
 }
 
 
@@ -557,6 +563,22 @@ make_next_boot_var_name(void)
 	return name;
 }
 
+static char *
+make_boot_var_name(uint16_t bootnum)
+{
+	struct entry *v;
+	char *name;
+
+	LIST_FOREACH(v, &efivars, entries) {
+		if (v->idx == bootnum)
+			return NULL;
+	}
+
+	asprintf(&name, "%s%04X", "Boot", bootnum);
+	if (name == NULL)
+		err(1, "asprintf");
+	return name;
+}
 
 static size_t
 create_loadopt(uint8_t *buf, size_t bufmax, uint32_t attributes, efidp dp, size_t dp_size,
@@ -605,7 +627,8 @@ create_loadopt(uint8_t *buf, size_t bufmax, uint32_t attributes, efidp dp, size_
 
 
 static int
-make_boot_var(const char *label, const char *loader, const char *kernel, const char *env, bool dry_run)
+make_boot_var(const char *label, const char *loader, const char *kernel, const char *env, bool dry_run,
+    int bootnum, bool activate)
 {
 	struct entry *new_ent;
 	uint32_t load_attrs = 0;
@@ -617,7 +640,10 @@ make_boot_var(const char *label, const char *loader, const char *kernel, const c
 
 	assert(label != NULL);
 
-	bootvar = make_next_boot_var_name();
+	if (bootnum == -1)
+		bootvar = make_next_boot_var_name();
+	else
+		bootvar = make_boot_var_name((uint16_t)bootnum);
 	if (bootvar == NULL)
 		err(1, "bootvar creation");
 	if (loader == NULL)
@@ -645,6 +671,8 @@ make_boot_var(const char *label, const char *loader, const char *kernel, const c
 
 	/* don't make the new bootvar active by default, use the -a option later */
 	load_attrs = LOAD_OPTION_CATEGORY_BOOT;
+	if (activate)
+		load_attrs |= LOAD_OPTION_ACTIVE;
 	load_opt_buf = malloc(MAX_LOADOPT_LEN);
 	if (load_opt_buf == NULL)
 		err(1, "malloc");
@@ -894,7 +922,8 @@ main(int argc, char *argv[])
 		 * side effect, adds to boot order, but not yet active.
 		 */
 		make_boot_var(opts.label ? opts.label : "",
-		    opts.loader, opts.kernel, opts.env, opts.dry_run);
+		    opts.loader, opts.kernel, opts.env, opts.dry_run,
+		    opts.has_bootnum ? opts.bootnum : -1, opts.set_active);
 	else if (opts.set_active || opts.set_inactive )
 		handle_activity(opts.bootnum, opts.set_active);
 	else if (opts.order != NULL)

@@ -381,8 +381,6 @@ struct ifnet {
 	 */
 	struct netdump_methods *if_netdump_methods;
 	struct epoch_context	if_epoch_ctx;
-	struct epoch_tracker	if_addr_et;
-	struct epoch_tracker	if_maddr_et;
 
 	/*
 	 * Spare fields to be added before branching a stable branch, so
@@ -400,18 +398,15 @@ struct ifnet {
  */
 #define	IF_ADDR_LOCK_INIT(if)	mtx_init(&(if)->if_addr_lock, "if_addr_lock", NULL, MTX_DEF)
 #define	IF_ADDR_LOCK_DESTROY(if)	mtx_destroy(&(if)->if_addr_lock)
-#define	IF_ADDR_RLOCK(if)       struct epoch_tracker if_addr_et; epoch_enter_preempt(net_epoch_preempt, &if_addr_et);
-#define	IF_ADDR_RUNLOCK(if)     epoch_exit_preempt(net_epoch_preempt, &if_addr_et);
 
 #define	IF_ADDR_WLOCK(if)	mtx_lock(&(if)->if_addr_lock)
 #define	IF_ADDR_WUNLOCK(if)	mtx_unlock(&(if)->if_addr_lock)
 #define	IF_ADDR_LOCK_ASSERT(if)	MPASS(in_epoch(net_epoch_preempt) || mtx_owned(&(if)->if_addr_lock))
 #define	IF_ADDR_WLOCK_ASSERT(if) mtx_assert(&(if)->if_addr_lock, MA_OWNED)
-#define	NET_EPOCH_ENTER() struct epoch_tracker nep_et; epoch_enter_preempt(net_epoch_preempt, &nep_et)
-#define	NET_EPOCH_ENTER_ET(et) epoch_enter_preempt(net_epoch_preempt, &(et))
-#define	NET_EPOCH_EXIT() epoch_exit_preempt(net_epoch_preempt, &nep_et)
-#define	NET_EPOCH_EXIT_ET(et) epoch_exit_preempt(net_epoch_preempt, &(et))
-
+#define	NET_EPOCH_ENTER(et)	epoch_enter_preempt(net_epoch_preempt, &(et))
+#define	NET_EPOCH_EXIT(et)	epoch_exit_preempt(net_epoch_preempt, &(et))
+#define	NET_EPOCH_WAIT()	epoch_wait_preempt(net_epoch_preempt)
+#define	NET_EPOCH_ASSERT()	MPASS(in_epoch(net_epoch_preempt))
 
 /*
  * Function variations on locking macros intended to be used by loadable
@@ -431,6 +426,11 @@ EVENTHANDLER_DECLARE(iflladdr_event, iflladdr_event_handler_t);
 /* interface address change event */
 typedef void (*ifaddr_event_handler_t)(void *, struct ifnet *);
 EVENTHANDLER_DECLARE(ifaddr_event, ifaddr_event_handler_t);
+typedef void (*ifaddr_event_ext_handler_t)(void *, struct ifnet *,
+    struct ifaddr *, int);
+EVENTHANDLER_DECLARE(ifaddr_event_ext, ifaddr_event_ext_handler_t);
+#define	IFADDR_EVENT_ADD	0
+#define	IFADDR_EVENT_DEL	1
 /* new interface arrival event */
 typedef void (*ifnet_arrival_event_handler_t)(void *, struct ifnet *);
 EVENTHANDLER_DECLARE(ifnet_arrival_event, ifnet_arrival_event_handler_t);
@@ -486,16 +486,13 @@ EVENTHANDLER_DECLARE(group_change_event, group_change_event_handler_t);
 	mtx_init(&(ifp)->if_afdata_lock, "if_afdata", NULL, MTX_DEF)
 
 #define	IF_AFDATA_WLOCK(ifp)	mtx_lock(&(ifp)->if_afdata_lock)
-#define	IF_AFDATA_RLOCK(ifp)	struct epoch_tracker if_afdata_et; epoch_enter_preempt(net_epoch_preempt, &if_afdata_et)
 #define	IF_AFDATA_WUNLOCK(ifp)	mtx_unlock(&(ifp)->if_afdata_lock)
-#define	IF_AFDATA_RUNLOCK(ifp)	epoch_exit_preempt(net_epoch_preempt, &if_afdata_et)
 #define	IF_AFDATA_LOCK(ifp)	IF_AFDATA_WLOCK(ifp)
 #define	IF_AFDATA_UNLOCK(ifp)	IF_AFDATA_WUNLOCK(ifp)
 #define	IF_AFDATA_TRYLOCK(ifp)	mtx_trylock(&(ifp)->if_afdata_lock)
 #define	IF_AFDATA_DESTROY(ifp)	mtx_destroy(&(ifp)->if_afdata_lock)
 
 #define	IF_AFDATA_LOCK_ASSERT(ifp)	MPASS(in_epoch(net_epoch_preempt) || mtx_owned(&(ifp)->if_afdata_lock))
-#define	IF_AFDATA_RLOCK_ASSERT(ifp)	MPASS(in_epoch(net_epoch_preempt));
 #define	IF_AFDATA_WLOCK_ASSERT(ifp)	mtx_assert(&(ifp)->if_afdata_lock, MA_OWNED)
 #define	IF_AFDATA_UNLOCK_ASSERT(ifp)	mtx_assert(&(ifp)->if_afdata_lock, MA_NOTOWNED)
 
@@ -548,12 +545,14 @@ void	ifa_ref(struct ifaddr *ifa);
  * Multicast address structure.  This is analogous to the ifaddr
  * structure except that it keeps track of multicast addresses.
  */
+#define IFMA_F_ENQUEUED		0x1
 struct ifmultiaddr {
 	CK_STAILQ_ENTRY(ifmultiaddr) ifma_link; /* queue macro glue */
 	struct	sockaddr *ifma_addr; 	/* address this membership is for */
 	struct	sockaddr *ifma_lladdr;	/* link-layer translation, if any */
 	struct	ifnet *ifma_ifp;	/* back-pointer to interface */
 	u_int	ifma_refcount;		/* reference count */
+	int	ifma_flags;
 	void	*ifma_protospec;	/* protocol-specific state, if any */
 	struct	ifmultiaddr *ifma_llifma; /* pointer to ifma for ifma_lladdr */
 	struct	epoch_context	ifma_epoch_ctx;
@@ -577,16 +576,13 @@ extern	struct sx ifnet_sxlock;
  * write, but also whether it was acquired with sleep support or not.
  */
 #define	IFNET_RLOCK_ASSERT()		sx_assert(&ifnet_sxlock, SA_SLOCKED)
-#define	IFNET_RLOCK_NOSLEEP_ASSERT()	MPASS(in_epoch(net_epoch_preempt))
 #define	IFNET_WLOCK_ASSERT() do {					\
 	sx_assert(&ifnet_sxlock, SA_XLOCKED);				\
 	rw_assert(&ifnet_rwlock, RA_WLOCKED);				\
 } while (0)
 
 #define	IFNET_RLOCK()		sx_slock(&ifnet_sxlock)
-#define	IFNET_RLOCK_NOSLEEP()	struct epoch_tracker ifnet_rlock_et; epoch_enter_preempt(net_epoch_preempt, &ifnet_rlock_et)
 #define	IFNET_RUNLOCK()		sx_sunlock(&ifnet_sxlock)
-#define	IFNET_RUNLOCK_NOSLEEP()	epoch_exit_preempt(net_epoch_preempt, &ifnet_rlock_et)
 
 /*
  * Look up an ifnet given its index; the _ref variant also acquires a
@@ -756,6 +752,8 @@ int if_hw_tsomax_update(if_t ifp, struct ifnet_hw_tsomax *);
 
 /* accessors for struct ifreq */
 void *ifr_data_get_ptr(void *ifrp);
+
+int ifhwioctl(u_long, struct ifnet *, caddr_t, struct thread *);
 
 #ifdef DEVICE_POLLING
 enum poll_cmd { POLL_ONLY, POLL_AND_CHECK_STATUS };

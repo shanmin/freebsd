@@ -231,8 +231,13 @@ static void inm_init(void)
 	taskqgroup_config_gtask_init(NULL, &free_gtask, inm_release_task, "inm release task");
 }
 
+#ifdef EARLY_AP_STARTUP
 SYSINIT(inm_init, SI_SUB_SMP + 1, SI_ORDER_FIRST,
 	inm_init, NULL);
+#else
+SYSINIT(inm_init, SI_SUB_ROOT_CONF - 1, SI_ORDER_FIRST,
+	inm_init, NULL);
+#endif
 
 
 void
@@ -258,7 +263,10 @@ inm_disconnect(struct in_multi *inm)
 	ifma = inm->inm_ifma;
 
 	if_ref(ifp);
-	CK_STAILQ_REMOVE(&ifp->if_multiaddrs, ifma, ifmultiaddr, ifma_link);
+	if (ifma->ifma_flags & IFMA_F_ENQUEUED) {
+		CK_STAILQ_REMOVE(&ifp->if_multiaddrs, ifma, ifmultiaddr, ifma_link);
+		ifma->ifma_flags &= ~IFMA_F_ENQUEUED;
+	}
 	MCDPRINTF("removed ifma: %p from %s\n", ifma, ifp->if_xname);
 	if ((ll_ifma = ifma->ifma_llifma) != NULL) {
 		MPASS(ifma != ll_ifma);
@@ -266,7 +274,10 @@ inm_disconnect(struct in_multi *inm)
 		MPASS(ll_ifma->ifma_llifma == NULL);
 		MPASS(ll_ifma->ifma_ifp == ifp);
 		if (--ll_ifma->ifma_refcount == 0) {
-			CK_STAILQ_REMOVE(&ifp->if_multiaddrs, ll_ifma, ifmultiaddr, ifma_link);
+			if (ll_ifma->ifma_flags & IFMA_F_ENQUEUED) {
+				CK_STAILQ_REMOVE(&ifp->if_multiaddrs, ll_ifma, ifmultiaddr, ifma_link);
+				ll_ifma->ifma_flags &= ~IFMA_F_ENQUEUED;
+			}
 			MCDPRINTF("removed ll_ifma: %p from %s\n", ll_ifma, ifp->if_xname);
 			if_freemulti(ll_ifma);
 			ifma_restart = true;
@@ -356,12 +367,13 @@ inm_lookup_locked(struct ifnet *ifp, const struct in_addr ina)
 struct in_multi *
 inm_lookup(struct ifnet *ifp, const struct in_addr ina)
 {
+	struct epoch_tracker et;
 	struct in_multi *inm;
 
 	IN_MULTI_LIST_LOCK_ASSERT();
-	IF_ADDR_RLOCK(ifp);
+	NET_EPOCH_ENTER(et);
 	inm = inm_lookup_locked(ifp, ina);
-	IF_ADDR_RUNLOCK(ifp);
+	NET_EPOCH_EXIT(et);
 
 	return (inm);
 }
@@ -1433,6 +1445,7 @@ static int
 inp_block_unblock_source(struct inpcb *inp, struct sockopt *sopt)
 {
 	struct group_source_req		 gsr;
+	struct rm_priotracker		 in_ifa_tracker;
 	sockunion_t			*gsa, *ssa;
 	struct ifnet			*ifp;
 	struct in_mfilter		*imf;
@@ -1470,9 +1483,11 @@ inp_block_unblock_source(struct inpcb *inp, struct sockopt *sopt)
 		ssa->sin.sin_len = sizeof(struct sockaddr_in);
 		ssa->sin.sin_addr = mreqs.imr_sourceaddr;
 
-		if (!in_nullhost(mreqs.imr_interface))
+		if (!in_nullhost(mreqs.imr_interface)) {
+			IN_IFADDR_RLOCK(&in_ifa_tracker);
 			INADDR_TO_IFP(mreqs.imr_interface, ifp);
-
+			IN_IFADDR_RUNLOCK(&in_ifa_tracker);
+		}
 		if (sopt->sopt_name == IP_BLOCK_SOURCE)
 			doblock = 1;
 
@@ -1663,15 +1678,12 @@ inp_findmoptions(struct inpcb *inp)
 }
 
 static void
-inp_gcmoptions(epoch_context_t ctx)
+inp_gcmoptions(struct ip_moptions *imo)
 {
-	struct ip_moptions *imo;
 	struct in_mfilter	*imf;
 	struct in_multi *inm;
 	struct ifnet *ifp;
 	size_t			 idx, nmships;
-
-	imo =  __containerof(ctx, struct ip_moptions, imo_epoch_ctx);
 
 	nmships = imo->imo_num_memberships;
 	for (idx = 0; idx < nmships; ++idx) {
@@ -1708,7 +1720,7 @@ inp_freemoptions(struct ip_moptions *imo)
 {
 	if (imo == NULL)
 		return;
-	epoch_call(net_epoch_preempt, &imo->imo_epoch_ctx, inp_gcmoptions);
+	inp_gcmoptions(imo);
 }
 
 /*
@@ -1876,13 +1888,15 @@ inp_getmoptions(struct inpcb *inp, struct sockopt *sopt)
 			if (!in_nullhost(imo->imo_multicast_addr)) {
 				mreqn.imr_address = imo->imo_multicast_addr;
 			} else if (ifp != NULL) {
+				struct epoch_tracker et;
+
 				mreqn.imr_ifindex = ifp->if_index;
-				NET_EPOCH_ENTER();
+				NET_EPOCH_ENTER(et);
 				IFP_TO_IA(ifp, ia, &in_ifa_tracker);
 				if (ia != NULL)
 					mreqn.imr_address =
 					    IA_SIN(ia)->sin_addr;
-				NET_EPOCH_EXIT();
+				NET_EPOCH_EXIT(et);
 			}
 		}
 		INP_WUNLOCK(inp);
@@ -1961,7 +1975,6 @@ inp_getmoptions(struct inpcb *inp, struct sockopt *sopt)
  *
  * Returns NULL if no ifp could be found.
  *
- * SMPng: TODO: Acquire the appropriate locks for INADDR_TO_IFP.
  * FUTURE: Implement IPv4 source-address selection.
  */
 static struct ifnet *
@@ -1979,7 +1992,9 @@ inp_lookup_mcast_ifp(const struct inpcb *inp,
 
 	ifp = NULL;
 	if (!in_nullhost(ina)) {
+		IN_IFADDR_RLOCK(&in_ifa_tracker);
 		INADDR_TO_IFP(ina, ifp);
+		IN_IFADDR_RUNLOCK(&in_ifa_tracker);
 	} else {
 		fibnum = inp ? inp->inp_inc.inc_fibnum : 0;
 		if (fib4_lookup_nh_basic(fibnum, gsin->sin_addr, 0, 0, &nh4)==0)
@@ -2260,7 +2275,8 @@ inp_join_group(struct inpcb *inp, struct sockopt *sopt)
                             __func__);
                         IN_MULTI_LIST_UNLOCK();
 			goto out_imo_free;
-                }
+		}
+		inm_acquire(inm);
 		imo->imo_membership[idx] = inm;
 	} else {
 		CTR1(KTR_IGMPV3, "%s: merge inm state", __func__);
@@ -2300,6 +2316,12 @@ out_in_multi_locked:
 
 out_imo_free:
 	if (error && is_new) {
+		inm = imo->imo_membership[idx];
+		if (inm != NULL) {
+			IN_MULTI_LIST_LOCK();
+			inm_release_deferred(inm);
+			IN_MULTI_LIST_UNLOCK();
+		}
 		imo->imo_membership[idx] = NULL;
 		--imo->imo_num_memberships;
 	}
@@ -2317,6 +2339,7 @@ inp_leave_group(struct inpcb *inp, struct sockopt *sopt)
 {
 	struct group_source_req		 gsr;
 	struct ip_mreq_source		 mreqs;
+	struct rm_priotracker		 in_ifa_tracker;
 	sockunion_t			*gsa, *ssa;
 	struct ifnet			*ifp;
 	struct in_mfilter		*imf;
@@ -2375,9 +2398,11 @@ inp_leave_group(struct inpcb *inp, struct sockopt *sopt)
 		 * XXX NOTE WELL: The RFC 3678 API is preferred because
 		 * using an IPv4 address as a key is racy.
 		 */
-		if (!in_nullhost(mreqs.imr_interface))
+		if (!in_nullhost(mreqs.imr_interface)) {
+			IN_IFADDR_RLOCK(&in_ifa_tracker);
 			INADDR_TO_IFP(mreqs.imr_interface, ifp);
-
+			IN_IFADDR_RUNLOCK(&in_ifa_tracker);
+		}
 		CTR3(KTR_IGMPV3, "%s: imr_interface = 0x%08x, ifp = %p",
 		    __func__, ntohl(mreqs.imr_interface.s_addr), ifp);
 
@@ -2545,6 +2570,7 @@ out_inp_locked:
 static int
 inp_set_multicast_if(struct inpcb *inp, struct sockopt *sopt)
 {
+	struct rm_priotracker	 in_ifa_tracker;
 	struct in_addr		 addr;
 	struct ip_mreqn		 mreqn;
 	struct ifnet		*ifp;
@@ -2583,7 +2609,9 @@ inp_set_multicast_if(struct inpcb *inp, struct sockopt *sopt)
 		if (in_nullhost(addr)) {
 			ifp = NULL;
 		} else {
+			IN_IFADDR_RLOCK(&in_ifa_tracker);
 			INADDR_TO_IFP(addr, ifp);
+			IN_IFADDR_RUNLOCK(&in_ifa_tracker);
 			if (ifp == NULL)
 				return (EADDRNOTAVAIL);
 		}
@@ -2941,6 +2969,7 @@ static int
 sysctl_ip_mcast_filters(SYSCTL_HANDLER_ARGS)
 {
 	struct in_addr			 src, group;
+	struct epoch_tracker		 et;
 	struct ifnet			*ifp;
 	struct ifmultiaddr		*ifma;
 	struct in_multi			*inm;
@@ -2987,7 +3016,7 @@ sysctl_ip_mcast_filters(SYSCTL_HANDLER_ARGS)
 
 	IN_MULTI_LIST_LOCK();
 
-	IF_ADDR_RLOCK(ifp);
+	NET_EPOCH_ENTER(et);
 	CK_STAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
 		if (ifma->ifma_addr->sa_family != AF_INET ||
 		    ifma->ifma_protospec == NULL)
@@ -3016,7 +3045,7 @@ sysctl_ip_mcast_filters(SYSCTL_HANDLER_ARGS)
 				break;
 		}
 	}
-	IF_ADDR_RUNLOCK(ifp);
+	NET_EPOCH_EXIT(et);
 
 	IN_MULTI_LIST_UNLOCK();
 

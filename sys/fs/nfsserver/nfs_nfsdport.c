@@ -128,12 +128,12 @@ static int nfsrv_getattrdsrpc(fhandle_t *, struct ucred *, NFSPROC_T *,
 static int nfsrv_putfhname(fhandle_t *, char *);
 static int nfsrv_pnfslookupds(struct vnode *, struct vnode *,
     struct pnfsdsfile *, struct vnode **, NFSPROC_T *);
-static void nfsrv_pnfssetfh(struct vnode *, struct pnfsdsfile *,
+static void nfsrv_pnfssetfh(struct vnode *, struct pnfsdsfile *, char *, char *,
     struct vnode *, NFSPROC_T *);
 static int nfsrv_dsremove(struct vnode *, char *, struct ucred *, NFSPROC_T *);
 static int nfsrv_dssetacl(struct vnode *, struct acl *, struct ucred *,
     NFSPROC_T *);
-static int nfsrv_pnfsstatfs(struct statfs *);
+static int nfsrv_pnfsstatfs(struct statfs *, struct mount *);
 
 int nfs_pnfsio(task_fn_t *, void *);
 
@@ -442,9 +442,33 @@ int
 nfsvno_setattr(struct vnode *vp, struct nfsvattr *nvap, struct ucred *cred,
     struct thread *p, struct nfsexstuff *exp)
 {
-	int error;
+	u_quad_t savsize = 0;
+	int error, savedit;
 
-	error = VOP_SETATTR(vp, &nvap->na_vattr, cred);
+	/*
+	 * If this is an exported file system and a pNFS service is running,
+	 * don't VOP_SETATTR() of size for the MDS file system.
+	 */
+	savedit = 0;
+	error = 0;
+	if (vp->v_type == VREG && (vp->v_mount->mnt_flag & MNT_EXPORTED) != 0 &&
+	    nfsrv_devidcnt != 0 && nvap->na_vattr.va_size != VNOVAL &&
+	    nvap->na_vattr.va_size > 0) {
+		savsize = nvap->na_vattr.va_size;
+		nvap->na_vattr.va_size = VNOVAL;
+		if (nvap->na_vattr.va_uid != (uid_t)VNOVAL ||
+		    nvap->na_vattr.va_gid != (gid_t)VNOVAL ||
+		    nvap->na_vattr.va_mode != (mode_t)VNOVAL ||
+		    nvap->na_vattr.va_atime.tv_sec != VNOVAL ||
+		    nvap->na_vattr.va_mtime.tv_sec != VNOVAL)
+			savedit = 1;
+		else
+			savedit = 2;
+	}
+	if (savedit != 2)
+		error = VOP_SETATTR(vp, &nvap->na_vattr, cred);
+	if (savedit != 0)
+		nvap->na_vattr.va_size = savsize;
 	if (error == 0 && (nvap->na_vattr.va_uid != (uid_t)VNOVAL ||
 	    nvap->na_vattr.va_gid != (gid_t)VNOVAL ||
 	    nvap->na_vattr.va_size != VNOVAL ||
@@ -972,8 +996,7 @@ nfsvno_createsub(struct nfsrv_descript *nd, struct nameidata *ndp,
 			if (nvap->na_type == VCHR && rdev == 0xffffffff)
 				nvap->na_type = VFIFO;
                         if (nvap->na_type != VFIFO &&
-			    (error = priv_check_cred(nd->nd_cred,
-			     PRIV_VFS_MKNOD_DEV, 0))) {
+			    (error = priv_check_cred(nd->nd_cred, PRIV_VFS_MKNOD_DEV))) {
 				vrele(ndp->ni_startdir);
 				nfsvno_relpathbuf(ndp);
 				vput(ndp->ni_dvp);
@@ -1067,7 +1090,7 @@ nfsvno_mknod(struct nameidata *ndp, struct nfsvattr *nvap, struct ucred *cred,
 		nfsvno_relpathbuf(ndp);
 	} else {
 		if (nvap->na_type != VFIFO &&
-		    (error = priv_check_cred(cred, PRIV_VFS_MKNOD_DEV, 0))) {
+		    (error = priv_check_cred(cred, PRIV_VFS_MKNOD_DEV))) {
 			vrele(ndp->ni_startdir);
 			nfsvno_relpathbuf(ndp);
 			vput(ndp->ni_dvp);
@@ -1569,7 +1592,7 @@ nfsvno_statfs(struct vnode *vp, struct statfs *sf)
 	if (nfsrv_devidcnt > 0) {
 		/* For a pNFS service, get the DS numbers. */
 		tsf = malloc(sizeof(*tsf), M_TEMP, M_WAITOK | M_ZERO);
-		error = nfsrv_pnfsstatfs(tsf);
+		error = nfsrv_pnfsstatfs(tsf, vp->v_mount);
 		if (error != 0) {
 			free(tsf, M_TEMP);
 			tsf = NULL;
@@ -1750,7 +1773,7 @@ nfsvno_fillattr(struct nfsrv_descript *nd, struct mount *mp, struct vnode *vp,
 	     NFSISSET_ATTRBIT(attrbitp, NFSATTRBIT_SPACEFREE) ||
 	     NFSISSET_ATTRBIT(attrbitp, NFSATTRBIT_SPACETOTAL))) {
 		sf = malloc(sizeof(*sf), M_TEMP, M_WAITOK | M_ZERO);
-		error = nfsrv_pnfsstatfs(sf);
+		error = nfsrv_pnfsstatfs(sf, mp);
 		if (error != 0) {
 			free(sf, M_TEMP);
 			sf = NULL;
@@ -1799,7 +1822,7 @@ nfsrvd_readdir(struct nfsrv_descript *nd, int isdgram,
 	struct nfsvattr at;
 	int nlen, error = 0, getret = 1;
 	int siz, cnt, fullsiz, eofflag, ncookies;
-	u_int64_t off, toff, verf;
+	u_int64_t off, toff, verf __unused;
 	u_long *cookies = NULL, *cookiep;
 	struct uio io;
 	struct iovec iv;
@@ -2083,9 +2106,15 @@ nfsrvd_readdirplus(struct nfsrv_descript *nd, int isdgram,
 	 * cookie) should be in the reply. At least one client "hints" 0,
 	 * so I set it to cnt for that case. I also round it up to the
 	 * next multiple of DIRBLKSIZ.
+	 * Since the size of a Readdirplus directory entry reply will always
+	 * be greater than a directory entry returned by VOP_READDIR(), it
+	 * does not make sense to read more than NFS_SRVMAXDATA() via
+	 * VOP_READDIR().
 	 */
 	if (siz <= 0)
 		siz = cnt;
+	else if (siz > NFS_SRVMAXDATA(nd))
+		siz = NFS_SRVMAXDATA(nd);
 	siz = ((siz + DIRBLKSIZ - 1) & ~(DIRBLKSIZ - 1));
 
 	if (nd->nd_flag & ND_NFSV4) {
@@ -2392,10 +2421,22 @@ again:
 						}
 					}
 				}
-				if (!r) {
-				    if (refp == NULL &&
-					((nd->nd_flag & ND_NFSV3) ||
-					 NFSNONZERO_ATTRBIT(&attrbits))) {
+
+				/*
+				 * If we failed to look up the entry, then it
+				 * has become invalid, most likely removed.
+				 */
+				if (r != 0) {
+					if (needs_unbusy)
+						vfs_unbusy(new_mp);
+					goto invalid;
+				}
+				KASSERT(refp != NULL || nvp != NULL,
+				    ("%s: undetected lookup error", __func__));
+
+				if (refp == NULL &&
+				    ((nd->nd_flag & ND_NFSV3) ||
+				     NFSNONZERO_ATTRBIT(&attrbits))) {
 					r = nfsvno_getfh(nvp, &nfh, p);
 					if (!r)
 					    r = nfsvno_getattr(nvp, nvap, nd, p,
@@ -2416,17 +2457,25 @@ again:
 					    if (new_mp == mp)
 						new_mp = nvp->v_mount;
 					}
-				    }
-				} else {
-				    nvp = NULL;
 				}
-				if (r) {
+
+				/*
+				 * If we failed to get attributes of the entry,
+				 * then just skip it for NFSv3 (the traditional
+				 * behavior in the old NFS server).
+				 * For NFSv4 the behavior is controlled by
+				 * RDATTRERROR: we either ignore the error or
+				 * fail the request.
+				 * Note that RDATTRERROR is never set for NFSv3.
+				 */
+				if (r != 0) {
 					if (!NFSISSET_ATTRBIT(&attrbits,
 					    NFSATTRBIT_RDATTRERROR)) {
-						if (nvp != NULL)
-							vput(nvp);
+						vput(nvp);
 						if (needs_unbusy != 0)
 							vfs_unbusy(new_mp);
+						if ((nd->nd_flag & ND_NFSV3))
+							goto invalid;
 						nd->nd_repstat = r;
 						break;
 					}
@@ -2495,6 +2544,7 @@ again:
 			if (dirlen <= cnt)
 				entrycnt++;
 		}
+invalid:
 		cpos += dp->d_reclen;
 		dp = (struct dirent *)cpos;
 		cookiep++;
@@ -3954,7 +4004,7 @@ nfsrv_pnfscreate(struct vnode *vp, struct vattr *vap, struct ucred *cred,
 		tdsc->p = p;
 		tdsc->pf = tpf;
 		tdsc->createva = *vap;
-		tdsc->fh = fh;
+		NFSBCOPY(&fh, &tdsc->fh, sizeof(fh));
 		tdsc->va = va;
 		tdsc->dvp = dvp[i];
 		tdsc->done = 0;
@@ -4044,21 +4094,16 @@ nfsrv_pnfscreate(struct vnode *vp, struct vattr *vap, struct ucred *cred,
 			tpf->dsf_sin.sin_port = 0;
 		}
 
-		error = vn_start_write(vp, &mp, V_WAIT);
-		if (error == 0) {
+		error = vn_extattr_set(vp, IO_NODELOCKED,
+		    EXTATTR_NAMESPACE_SYSTEM, "pnfsd.dsfile",
+		    sizeof(*pf) * nfsrv_maxpnfsmirror, (char *)pf, p);
+		if (error == 0)
 			error = vn_extattr_set(vp, IO_NODELOCKED,
-			    EXTATTR_NAMESPACE_SYSTEM, "pnfsd.dsfile",
-			    sizeof(*pf) * nfsrv_maxpnfsmirror, (char *)pf, p);
-			if (error == 0)
-				error = vn_extattr_set(vp, IO_NODELOCKED,
-				    EXTATTR_NAMESPACE_SYSTEM, "pnfsd.dsattr",
-				    sizeof(dsattr), (char *)&dsattr, p);
-			vn_finished_write(mp);
-			if (error != 0)
-				printf("pNFS: pnfscreate setextattr=%d\n",
-				    error);
-		} else
-			printf("pNFS: pnfscreate startwrite=%d\n", error);
+			    EXTATTR_NAMESPACE_SYSTEM, "pnfsd.dsattr",
+			    sizeof(dsattr), (char *)&dsattr, p);
+		if (error != 0)
+			printf("pNFS: pnfscreate setextattr=%d\n",
+			    error);
 	} else
 		printf("pNFS: pnfscreate=%d\n", error);
 	free(pf, M_TEMP);
@@ -4391,6 +4436,9 @@ nfsrv_proxyds(struct nfsrv_descript *nd, struct vnode *vp, off_t off, int cnt,
 tryagain:
 	if (error == 0) {
 		buflen = 1024;
+		if (ioproc == NFSPROC_READDS && NFSVOPISLOCKED(vp) ==
+		    LK_EXCLUSIVE)
+			printf("nfsrv_proxyds: Readds vp exclusively locked\n");
 		error = nfsrv_dsgetsockmnt(vp, LK_SHARED, buf, &buflen,
 		    &mirrorcnt, p, dvp, fh, NULL, NULL, NULL, NULL, NULL,
 		    NULL, NULL);
@@ -4649,6 +4697,8 @@ nfsrv_dsgetsockmnt(struct vnode *vp, int lktype, char *buf, int *buflenp,
 							if (fhiszero != 0)
 								nfsrv_pnfssetfh(
 								    vp, pf,
+								    devid,
+								    fnamep,
 								    nvp, p);
 							if (nvpp != NULL &&
 							    *nvpp == NULL) {
@@ -4722,21 +4772,15 @@ static int
 nfsrv_setextattr(struct vnode *vp, struct nfsvattr *nap, NFSPROC_T *p)
 {
 	struct pnfsdsattr dsattr;
-	struct mount *mp;
 	int error;
 
 	ASSERT_VOP_ELOCKED(vp, "nfsrv_setextattr vp");
-	error = vn_start_write(vp, &mp, V_WAIT);
-	if (error == 0) {
-		dsattr.dsa_filerev = nap->na_filerev;
-		dsattr.dsa_size = nap->na_size;
-		dsattr.dsa_atime = nap->na_atime;
-		dsattr.dsa_mtime = nap->na_mtime;
-		error = vn_extattr_set(vp, IO_NODELOCKED,
-		    EXTATTR_NAMESPACE_SYSTEM, "pnfsd.dsattr",
-		    sizeof(dsattr), (char *)&dsattr, p);
-		vn_finished_write(mp);
-	}
+	dsattr.dsa_filerev = nap->na_filerev;
+	dsattr.dsa_size = nap->na_size;
+	dsattr.dsa_atime = nap->na_atime;
+	dsattr.dsa_mtime = nap->na_mtime;
+	error = vn_extattr_set(vp, IO_NODELOCKED, EXTATTR_NAMESPACE_SYSTEM,
+	    "pnfsd.dsattr", sizeof(dsattr), (char *)&dsattr, p);
 	if (error != 0)
 		printf("pNFS: setextattr=%d\n", error);
 	return (error);
@@ -5014,7 +5058,7 @@ nfsrv_writedsrpc(fhandle_t *fhp, off_t off, int len, struct ucred *cred,
 	error = 0;
 	for (i = 0; i < mirrorcnt - 1; i++, tdrpc++) {
 		tdrpc->done = 0;
-		tdrpc->fh = *fhp;
+		NFSBCOPY(fhp, &tdrpc->fh, sizeof(*fhp));
 		tdrpc->off = off;
 		tdrpc->len = len;
 		tdrpc->nmp = *nmpp;
@@ -5200,7 +5244,7 @@ nfsrv_setattrdsrpc(fhandle_t *fhp, struct ucred *cred, NFSPROC_T *p,
 	for (i = 0; i < mirrorcnt - 1; i++, tdrpc++) {
 		tdrpc->done = 0;
 		tdrpc->inprog = 0;
-		tdrpc->fh = *fhp;
+		NFSBCOPY(fhp, &tdrpc->fh, sizeof(*fhp));
 		tdrpc->nmp = *nmpp;
 		tdrpc->vp = vp;
 		tdrpc->cred = cred;
@@ -5348,7 +5392,7 @@ nfsrv_setacldsrpc(fhandle_t *fhp, struct ucred *cred, NFSPROC_T *p,
 	for (i = 0; i < mirrorcnt - 1; i++, tdrpc++) {
 		tdrpc->done = 0;
 		tdrpc->inprog = 0;
-		tdrpc->fh = *fhp;
+		NFSBCOPY(fhp, &tdrpc->fh, sizeof(*fhp));
 		tdrpc->nmp = *nmpp;
 		tdrpc->vp = vp;
 		tdrpc->cred = cred;
@@ -5508,35 +5552,26 @@ nfsrv_pnfslookupds(struct vnode *vp, struct vnode *dvp, struct pnfsdsfile *pf,
  * Set the file handle to the correct one.
  */
 static void
-nfsrv_pnfssetfh(struct vnode *vp, struct pnfsdsfile *pf, struct vnode *nvp,
-    NFSPROC_T *p)
+nfsrv_pnfssetfh(struct vnode *vp, struct pnfsdsfile *pf, char *devid,
+    char *fnamep, struct vnode *nvp, NFSPROC_T *p)
 {
-	struct mount *mp;
 	struct nfsnode *np;
 	int ret;
 
 	np = VTONFS(nvp);
 	NFSBCOPY(np->n_fhp->nfh_fh, &pf->dsf_fh, NFSX_MYFH);
 	/*
-	 * We can only do a setextattr for an exclusively
-	 * locked vp.  Instead of trying to upgrade a shared
-	 * lock, just leave dsf_fh zeroed out and it will
-	 * keep doing this lookup until it is done with an
-	 * exclusively locked vp.
+	 * We can only do a vn_set_extattr() if the vnode is exclusively
+	 * locked and vn_start_write() has been done.  If devid != NULL or
+	 * fnamep != NULL or the vnode is shared locked, vn_start_write()
+	 * may not have been done.
+	 * If not done now, it will be done on a future call.
 	 */
-	if (NFSVOPISLOCKED(vp) == LK_EXCLUSIVE) {
-		ret = vn_start_write(vp, &mp, V_WAIT);
-		NFSD_DEBUG(4, "nfsrv_pnfssetfh: vn_start_write=%d\n",
-		    ret);
-		if (ret == 0) {
-			ret = vn_extattr_set(vp, IO_NODELOCKED,
-			    EXTATTR_NAMESPACE_SYSTEM, "pnfsd.dsfile",
-			    sizeof(*pf), (char *)pf, p);
-			vn_finished_write(mp);
-			NFSD_DEBUG(4, "nfsrv_pnfslookupds: aft "
-			    "vn_extattr_set=%d\n", ret);
-		}
-	}
+	if (devid == NULL && fnamep == NULL && NFSVOPISLOCKED(vp) ==
+	    LK_EXCLUSIVE)
+		ret = vn_extattr_set(vp, IO_NODELOCKED,
+		    EXTATTR_NAMESPACE_SYSTEM, "pnfsd.dsfile", sizeof(*pf),
+		    (char *)pf, p);
 	NFSD_DEBUG(4, "eo nfsrv_pnfssetfh=%d\n", ret);
 }
 
@@ -5569,7 +5604,7 @@ nfsrv_killrpcs(struct nfsmount *nmp)
  * receive the total for all DSs.
  */
 static int
-nfsrv_pnfsstatfs(struct statfs *sf)
+nfsrv_pnfsstatfs(struct statfs *sf, struct mount *mp)
 {
 	struct statfs *tsf;
 	struct nfsdevice *ds;
@@ -5586,11 +5621,28 @@ nfsrv_pnfsstatfs(struct statfs *sf)
 	tdvpp = dvpp;
 	i = 0;
 	NFSDDSLOCK();
+	/* First, search for matches for same file system. */
 	TAILQ_FOREACH(ds, &nfsrv_devidhead, nfsdev_list) {
-		if (ds->nfsdev_nmp != NULL) {
+		if (ds->nfsdev_nmp != NULL && ds->nfsdev_mdsisset != 0 &&
+		    ds->nfsdev_mdsfsid.val[0] == mp->mnt_stat.f_fsid.val[0] &&
+		    ds->nfsdev_mdsfsid.val[1] == mp->mnt_stat.f_fsid.val[1]) {
 			if (++i > nfsrv_devidcnt)
 				break;
 			*tdvpp++ = ds->nfsdev_dvp;
+		}
+	}
+	/*
+	 * If no matches for same file system, total all servers not assigned
+	 * to a file system.
+	 */
+	if (i == 0) {
+		TAILQ_FOREACH(ds, &nfsrv_devidhead, nfsdev_list) {
+			if (ds->nfsdev_nmp != NULL &&
+			    ds->nfsdev_mdsisset == 0) {
+				if (++i > nfsrv_devidcnt)
+					break;
+				*tdvpp++ = ds->nfsdev_dvp;
+			}
 		}
 	}
 	NFSDDSUNLOCK();

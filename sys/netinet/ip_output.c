@@ -215,6 +215,7 @@ ip_output(struct mbuf *m, struct mbuf *opt, struct route *ro, int flags,
     struct ip_moptions *imo, struct inpcb *inp)
 {
 	struct rm_priotracker in_ifa_tracker;
+	struct epoch_tracker et;
 	struct ip *ip;
 	struct ifnet *ifp = NULL;	/* keep compiler happy */
 	struct mbuf *m0;
@@ -262,11 +263,12 @@ ip_output(struct mbuf *m, struct mbuf *opt, struct route *ro, int flags,
 		ip->ip_v = IPVERSION;
 		ip->ip_hl = hlen >> 2;
 		ip_fillid(ip);
-		IPSTAT_INC(ips_localout);
 	} else {
 		/* Header already set, fetch hlen from there */
 		hlen = ip->ip_hl << 2;
 	}
+	if ((flags & IP_FORWARDING) == 0)
+		IPSTAT_INC(ips_localout);
 
 	/*
 	 * dst/gw handling:
@@ -284,7 +286,7 @@ ip_output(struct mbuf *m, struct mbuf *opt, struct route *ro, int flags,
 		dst->sin_len = sizeof(*dst);
 		dst->sin_addr = ip->ip_dst;
 	}
-	NET_EPOCH_ENTER();
+	NET_EPOCH_ENTER(et);
 again:
 	/*
 	 * Validate route against routing table additions;
@@ -732,7 +734,7 @@ done:
 		 * calling RTFREE on it again.
 		 */
 		ro->ro_rt = NULL;
-	NET_EPOCH_EXIT();
+	NET_EPOCH_EXIT(et);
 	return (error);
  bad:
 	m_freem(m);
@@ -932,10 +934,11 @@ in_delayed_cksum(struct mbuf *m)
 
 	if (m->m_pkthdr.csum_flags & CSUM_UDP) {
 		/* if udp header is not in the first mbuf copy udplen */
-		if (offset + sizeof(struct udphdr) > m->m_len)
+		if (offset + sizeof(struct udphdr) > m->m_len) {
 			m_copydata(m, offset + offsetof(struct udphdr,
 			    uh_ulen), sizeof(cklen), (caddr_t)&cklen);
-		else {
+			cklen = ntohs(cklen);
+		} else {
 			uh = (struct udphdr *)mtodo(m, offset);
 			cklen = ntohs(uh->uh_ulen);
 		}
@@ -1256,13 +1259,24 @@ ip_ctloutput(struct socket *so, struct sockopt *sopt)
 		switch (sopt->sopt_name) {
 		case IP_OPTIONS:
 		case IP_RETOPTS:
-			if (inp->inp_options)
-				error = sooptcopyout(sopt,
-						     mtod(inp->inp_options,
-							  char *),
-						     inp->inp_options->m_len);
-			else
+			INP_RLOCK(inp);
+			if (inp->inp_options) {
+				struct mbuf *options;
+
+				options = m_copym(inp->inp_options, 0,
+				    M_COPYALL, M_NOWAIT);
+				INP_RUNLOCK(inp);
+				if (options != NULL) {
+					error = sooptcopyout(sopt,
+							     mtod(options, char *),
+							     options->m_len);
+					m_freem(options);
+				} else
+					error = ENOMEM;
+			} else {
+				INP_RUNLOCK(inp);
 				sopt->sopt_valsize = 0;
+			}
 			break;
 
 		case IP_TOS:

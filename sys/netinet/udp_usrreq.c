@@ -144,7 +144,7 @@ VNET_DEFINE(struct inpcbhead, udb);		/* from udp_var.h */
 VNET_DEFINE(struct inpcbinfo, udbinfo);
 VNET_DEFINE(struct inpcbhead, ulitecb);
 VNET_DEFINE(struct inpcbinfo, ulitecbinfo);
-static VNET_DEFINE(uma_zone_t, udpcb_zone);
+VNET_DEFINE_STATIC(uma_zone_t, udpcb_zone);
 #define	V_udpcb_zone			VNET(udpcb_zone)
 
 #ifndef UDBHASHSIZE
@@ -528,7 +528,6 @@ udp_input(struct mbuf **mp, int *offp, int proto)
 	    in_broadcast(ip->ip_dst, ifp)) {
 		struct inpcb *last;
 		struct inpcbhead *pcblist;
-		struct ip_moptions *imo;
 
 		INP_INFO_RLOCK_ET(pcbinfo, et);
 		pcblist = udp_get_pcblist(proto);
@@ -552,6 +551,11 @@ udp_input(struct mbuf **mp, int *offp, int proto)
 
 			INP_RLOCK(inp);
 
+			if (__predict_false(inp->inp_flags2 & INP_FREED)) {
+				INP_RUNLOCK(inp);
+				continue;
+			}
+
 			/*
 			 * XXXRW: Because we weren't holding either the inpcb
 			 * or the hash lock when we checked for a match
@@ -563,10 +567,12 @@ udp_input(struct mbuf **mp, int *offp, int proto)
 			 * Handle socket delivery policy for any-source
 			 * and source-specific multicast. [RFC3678]
 			 */
-			imo = inp->inp_moptions;
 			if (IN_MULTICAST(ntohl(ip->ip_dst.s_addr))) {
+				struct ip_moptions	*imo;
 				struct sockaddr_in	 group;
 				int			 blocked;
+
+				imo = inp->inp_moptions;
 				if (imo == NULL) {
 					INP_RUNLOCK(inp);
 					continue;
@@ -594,8 +600,12 @@ udp_input(struct mbuf **mp, int *offp, int proto)
 
 				if ((n = m_copym(m, 0, M_COPYALL, M_NOWAIT)) !=
 				    NULL) {
-					UDP_PROBE(receive, NULL, last, ip,
-					    last, uh);
+					if (proto == IPPROTO_UDPLITE)
+						UDPLITE_PROBE(receive, NULL, last, ip,
+						    last, uh);
+					else
+						UDP_PROBE(receive, NULL, last, ip, last,
+						    uh);
 					if (udp_append(last, ip, n, iphlen,
 						udp_in)) {
 						goto inp_lost;
@@ -629,7 +639,10 @@ udp_input(struct mbuf **mp, int *offp, int proto)
 			INP_INFO_RUNLOCK_ET(pcbinfo, et);
 			goto badunlocked;
 		}
-		UDP_PROBE(receive, NULL, last, ip, last, uh);
+		if (proto == IPPROTO_UDPLITE)
+			UDPLITE_PROBE(receive, NULL, last, ip, last, uh);
+		else
+			UDP_PROBE(receive, NULL, last, ip, last, uh);
 		if (udp_append(last, ip, m, iphlen, udp_in) == 0) 
 			INP_RUNLOCK(last);
 	inp_lost:
@@ -685,6 +698,10 @@ udp_input(struct mbuf **mp, int *offp, int proto)
 			    inet_ntoa_r(ip->ip_dst, dst), ntohs(uh->uh_dport),
 			    inet_ntoa_r(ip->ip_src, src), ntohs(uh->uh_sport));
 		}
+		if (proto == IPPROTO_UDPLITE)
+			UDPLITE_PROBE(receive, NULL, NULL, ip, NULL, uh);
+		else
+			UDP_PROBE(receive, NULL, NULL, ip, NULL, uh);
 		UDPSTAT_INC(udps_noport);
 		if (m->m_flags & (M_BCAST | M_MCAST)) {
 			UDPSTAT_INC(udps_noportbcast);
@@ -704,6 +721,10 @@ udp_input(struct mbuf **mp, int *offp, int proto)
 	 */
 	INP_RLOCK_ASSERT(inp);
 	if (inp->inp_ip_minttl && inp->inp_ip_minttl > ip->ip_ttl) {
+		if (proto == IPPROTO_UDPLITE)
+			UDPLITE_PROBE(receive, NULL, inp, ip, inp, uh);
+		else
+			UDP_PROBE(receive, NULL, inp, ip, inp, uh);
 		INP_RUNLOCK(inp);
 		m_freem(m);
 		return (IPPROTO_DONE);
@@ -719,7 +740,10 @@ udp_input(struct mbuf **mp, int *offp, int proto)
 		}
 	}
 
-	UDP_PROBE(receive, NULL, inp, ip, inp, uh);
+	if (proto == IPPROTO_UDPLITE)
+		UDPLITE_PROBE(receive, NULL, inp, ip, inp, uh);
+	else
+		UDP_PROBE(receive, NULL, inp, ip, inp, uh);
 	if (udp_append(inp, ip, m, iphlen, udp_in) == 0) 
 		INP_RUNLOCK(inp);
 	return (IPPROTO_DONE);
@@ -738,13 +762,7 @@ struct inpcb *
 udp_notify(struct inpcb *inp, int errno)
 {
 
-	/*
-	 * While udp_ctlinput() always calls udp_notify() with a read lock
-	 * when invoking it directly, in_pcbnotifyall() currently uses write
-	 * locks due to sharing code with TCP.  For now, accept either a read
-	 * or a write lock, but a read lock is sufficient.
-	 */
-	INP_LOCK_ASSERT(inp);
+	INP_WLOCK_ASSERT(inp);
 	if ((errno == EHOSTUNREACH || errno == ENETUNREACH ||
 	     errno == EHOSTDOWN) && inp->inp_route.ro_rt) {
 		RTFREE(inp->inp_route.ro_rt);
@@ -790,13 +808,13 @@ udp_common_ctlinput(int cmd, struct sockaddr *sa, void *vip,
 	if (ip != NULL) {
 		uh = (struct udphdr *)((caddr_t)ip + (ip->ip_hl << 2));
 		inp = in_pcblookup(pcbinfo, faddr, uh->uh_dport,
-		    ip->ip_src, uh->uh_sport, INPLOOKUP_RLOCKPCB, NULL);
+		    ip->ip_src, uh->uh_sport, INPLOOKUP_WLOCKPCB, NULL);
 		if (inp != NULL) {
-			INP_RLOCK_ASSERT(inp);
+			INP_WLOCK_ASSERT(inp);
 			if (inp->inp_socket != NULL) {
 				udp_notify(inp, inetctlerrmap[cmd]);
 			}
-			INP_RUNLOCK(inp);
+			INP_WUNLOCK(inp);
 		} else {
 			inp = in_pcblookup(pcbinfo, faddr, uh->uh_dport,
 					   ip->ip_src, uh->uh_sport,
@@ -869,6 +887,7 @@ udp_pcblist(SYSCTL_HANDLER_ARGS)
 	if (error != 0)
 		return (error);
 
+	bzero(&xig, sizeof(xig));
 	xig.xig_len = sizeof xig;
 	xig.xig_count = n;
 	xig.xig_gen = gencnt;
@@ -1395,6 +1414,7 @@ udp_output(struct inpcb *inp, struct mbuf *m, struct sockaddr *addr,
 	 */
 	ui = mtod(m, struct udpiphdr *);
 	bzero(ui->ui_x1, sizeof(ui->ui_x1));	/* XXX still needed? */
+	ui->ui_v = IPVERSION << 4;
 	ui->ui_pr = pr;
 	ui->ui_src = laddr;
 	ui->ui_dst = faddr;
@@ -1417,8 +1437,7 @@ udp_output(struct inpcb *inp, struct mbuf *m, struct sockaddr *addr,
 		 * the entire UDPLite packet is covered by the checksum.
 		 */
 		cscov_partial = (cscov == 0) ? 0 : 1;
-	} else
-		ui->ui_v = IPVERSION << 4;
+	}
 
 	/*
 	 * Set the Don't Fragment bit in the IP header.
@@ -1524,7 +1543,10 @@ udp_output(struct inpcb *inp, struct mbuf *m, struct sockaddr *addr,
 		INP_HASH_WUNLOCK(pcbinfo);
 	else if (unlock_udbinfo == UH_RLOCKED)
 		INP_HASH_RUNLOCK_ET(pcbinfo, et);
-	UDP_PROBE(send, NULL, inp, &ui->ui_i, inp, &ui->ui_u);
+	if (pr == IPPROTO_UDPLITE)
+		UDPLITE_PROBE(send, NULL, inp, &ui->ui_i, inp, &ui->ui_u);
+	else
+		UDP_PROBE(send, NULL, inp, &ui->ui_i, inp, &ui->ui_u);
 	error = ip_output(m, inp->inp_options,
 	    (unlock_inp == UH_WLOCKED ? &inp->inp_route : NULL), ipflags,
 	    inp->inp_moptions, inp);

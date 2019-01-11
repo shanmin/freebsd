@@ -129,7 +129,6 @@ int main(void);
 #ifdef LOADER_GELI_SUPPORT
 #include "geliboot.h"
 static char gelipw[GELI_PW_MAXLEN];
-static struct keybuf *gelibuf;
 #endif
 
 struct zfsdsk {
@@ -707,8 +706,7 @@ main(void)
     }
     setheap(heap_next, heap_end);
 
-    zdsk = malloc(sizeof(struct zfsdsk));
-    zdsk->gdev = NULL;
+    zdsk = calloc(1, sizeof(struct zfsdsk));
     zdsk->dsk.drive = *(uint8_t *)PTOV(ARGS);
     zdsk->dsk.type = zdsk->dsk.drive & DRV_HARD ? TYPE_AD : TYPE_FD;
     zdsk->dsk.unit = zdsk->dsk.drive & DRV_MASK;
@@ -756,7 +754,7 @@ main(void)
 	if (!int13probe(i | DRV_HARD))
 	    break;
 
-	zdsk = malloc(sizeof(struct zfsdsk));
+	zdsk = calloc(1, sizeof(struct zfsdsk));
 	zdsk->dsk.drive = i | DRV_HARD;
 	zdsk->dsk.type = zdsk->dsk.drive & TYPE_AD;
 	zdsk->dsk.unit = i;
@@ -846,7 +844,7 @@ main(void)
      */
 
     if (autoboot && !*kname) {
-	memcpy(kname, PATH_LOADER_ZFS, sizeof(PATH_LOADER_ZFS));
+	memcpy(kname, PATH_LOADER, sizeof(PATH_LOADER));
 	if (!keyhit(3)) {
 	    load();
 	    memcpy(kname, PATH_KERNEL, sizeof(PATH_KERNEL));
@@ -994,18 +992,17 @@ load(void)
     zfsargs.primary_pool = primary_spa->spa_guid;
 #ifdef LOADER_GELI_SUPPORT
     explicit_bzero(gelipw, sizeof(gelipw));
-    gelibuf = malloc(sizeof(struct keybuf) + (GELI_MAX_KEYS * sizeof(struct keybuf_ent)));
-    geli_export_key_buffer(gelibuf);
-    zfsargs.notapw = '\0';
-    zfsargs.keybuf_sentinel = KEYBUF_SENTINEL;
-    zfsargs.keybuf = gelibuf;
-#else
-    zfsargs.gelipw[0] = '\0';
+    export_geli_boot_data(&zfsargs.gelidata);
 #endif
     if (primary_vdev != NULL)
 	zfsargs.primary_vdev = primary_vdev->v_guid;
     else
 	printf("failed to detect primary vdev\n");
+    /*
+     * Note that the zfsargs struct is passed by value, not by pointer.  Code in
+     * btxldr.S copies the values from the entry stack to a fixed location
+     * within loader(8) at startup due to the presence of KARGS_FLAGS_EXTARG.
+     */
     __exec((caddr_t)addr, RB_BOOTINFO | (opts & RBX_MASK),
 	   bootdev,
 	   KARGS_FLAGS_ZFS | KARGS_FLAGS_EXTARG,

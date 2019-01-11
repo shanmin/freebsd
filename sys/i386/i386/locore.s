@@ -120,8 +120,8 @@ NON_GPROF_ENTRY(btext)
  * inactive from now until we switch to new ones, since we don't load any
  * more segment registers or permit interrupts until after the switch.
  */
-	movl	$end,%ecx
-	movl	$edata,%edi
+	movl	$__bss_end,%ecx
+	movl	$__bss_start,%edi
 	subl	%edi,%ecx
 	xorl	%eax,%eax
 	cld
@@ -328,7 +328,9 @@ olddiskboot:
  * Identify the CPU and initialize anything special about it
  *
  */
-identify_cpu:
+ENTRY(identify_cpu)
+
+	pushl	%ebx
 
 	/* Try to toggle alignment check flag; does not exist on 386. */
 	pushfl
@@ -449,7 +451,9 @@ trycpuid:	/* Use the `cpuid' instruction. */
 	/* Greater than Pentium...call it a Pentium Pro */
 	movl	$CPU_686,cpu
 3:
+	popl	%ebx
 	ret
+END(identify_cpu)
 
 #ifdef XENHVM
 /* Xen Hypercall page */

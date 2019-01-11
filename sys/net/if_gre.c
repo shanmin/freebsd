@@ -94,7 +94,7 @@ SX_SYSINIT(gre_ioctl_sx, &gre_ioctl_sx, "gre_ioctl");
 
 static int	gre_clone_create(struct if_clone *, int, caddr_t);
 static void	gre_clone_destroy(struct ifnet *);
-static VNET_DEFINE(struct if_clone *, gre_cloner);
+VNET_DEFINE_STATIC(struct if_clone *, gre_cloner);
 #define	V_gre_cloner	VNET(gre_cloner)
 
 static void	gre_qflush(struct ifnet *);
@@ -119,7 +119,7 @@ static SYSCTL_NODE(_net_link, IFT_TUNNEL, gre, CTLFLAG_RW, 0,
 #define MAX_GRE_NEST 1
 #endif
 
-static VNET_DEFINE(int, max_gre_nesting) = MAX_GRE_NEST;
+VNET_DEFINE_STATIC(int, max_gre_nesting) = MAX_GRE_NEST;
 #define	V_max_gre_nesting	VNET(max_gre_nesting)
 SYSCTL_INT(_net_link_gre, OID_AUTO, max_nesting, CTLFLAG_RW | CTLFLAG_VNET,
     &VNET_NAME(max_gre_nesting), 0, "Max nested tunnels");
@@ -326,7 +326,6 @@ gre_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		    cmd == SIOCSIFPHYADDR_IN6 ||
 #endif
 		    0) {
-			ifp->if_drv_flags |= IFF_DRV_RUNNING;
 			if_link_state_change(ifp, LINK_STATE_UP);
 		}
 	}
@@ -342,6 +341,7 @@ gre_delete_tunnel(struct gre_softc *sc)
 	sx_assert(&gre_ioctl_sx, SA_XLOCKED);
 	if (sc->gre_family != 0) {
 		CK_LIST_REMOVE(sc, chain);
+		CK_LIST_REMOVE(sc, srchash);
 		GRE_WAIT();
 		free(sc->gre_hdr, M_GRE);
 		sc->gre_family = 0;
@@ -543,6 +543,7 @@ gre_setseqn(struct grehdr *gh, uint32_t seq)
 static int
 gre_transmit(struct ifnet *ifp, struct mbuf *m)
 {
+	GRE_RLOCK_TRACKER;
 	struct gre_softc *sc;
 	struct grehdr *gh;
 	uint32_t af;
@@ -550,6 +551,7 @@ gre_transmit(struct ifnet *ifp, struct mbuf *m)
 	uint16_t proto;
 
 	len = 0;
+	GRE_RLOCK();
 #ifdef MAC
 	error = mac_ifnet_check_transmit(ifp, m);
 	if (error) {
@@ -558,10 +560,10 @@ gre_transmit(struct ifnet *ifp, struct mbuf *m)
 	}
 #endif
 	error = ENETDOWN;
-	GRE_RLOCK();
 	sc = ifp->if_softc;
 	if ((ifp->if_flags & IFF_MONITOR) != 0 ||
 	    (ifp->if_flags & IFF_UP) == 0 ||
+	    (ifp->if_drv_flags & IFF_DRV_RUNNING) == 0 ||
 	    sc->gre_family == 0 ||
 	    (error = if_tunnel_check_nesting(ifp, m, MTAG_GRE,
 		V_max_gre_nesting)) != 0) {
@@ -569,6 +571,8 @@ gre_transmit(struct ifnet *ifp, struct mbuf *m)
 		goto drop;
 	}
 	af = m->m_pkthdr.csum_data;
+	BPF_MTAP2(ifp, &af, sizeof(af), m);
+	m->m_flags &= ~(M_BCAST|M_MCAST);
 	M_SETFIB(m, sc->gre_fibnum);
 	M_PREPEND(m, sc->gre_hlen, M_NOWAIT);
 	if (m == NULL) {

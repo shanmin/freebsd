@@ -371,6 +371,7 @@ init_casper(void)
 int
 main(int argc, char *argv[])
 {
+	u_int			 capmode;
 	int			 ch, fd, quiet = 0, i = 0;
 	int			 pipe_fd[2];
 	int			 immediate_daemon = 0;
@@ -419,7 +420,7 @@ main(int argc, char *argv[])
 
 	if (path_dhclient_pidfile == NULL) {
 		asprintf(&path_dhclient_pidfile,
-		    "%sdhclient.%s.pid", _PATH_VARRUN, *argv);
+		    "%s/dhclient/dhclient.%s.pid", _PATH_VARRUN, *argv);
 		if (path_dhclient_pidfile == NULL)
 			error("asprintf");
 	}
@@ -511,7 +512,7 @@ main(int argc, char *argv[])
 	close(pipe_fd[0]);
 	privfd = pipe_fd[1];
 	cap_rights_init(&rights, CAP_READ, CAP_WRITE);
-	if (cap_rights_limit(privfd, &rights) < 0 && errno != ENOSYS)
+	if (caph_rights_limit(privfd, &rights) < 0)
 		error("can't limit private descriptor: %m");
 
 	if ((fd = open(path_dhclient_db, O_RDONLY|O_EXLOCK|O_CREAT, 0)) == -1)
@@ -525,25 +526,35 @@ main(int argc, char *argv[])
 	if (shutdown(routefd, SHUT_WR) < 0)
 		error("can't shutdown route socket: %m");
 	cap_rights_init(&rights, CAP_EVENT, CAP_READ);
-	if (cap_rights_limit(routefd, &rights) < 0 && errno != ENOSYS)
+	if (caph_rights_limit(routefd, &rights) < 0)
 		error("can't limit route socket: %m");
-
-	if (chroot(_PATH_VAREMPTY) == -1)
-		error("chroot");
-	if (chdir("/") == -1)
-		error("chdir(\"/\")");
-
-	if (setgroups(1, &pw->pw_gid) ||
-	    setegid(pw->pw_gid) || setgid(pw->pw_gid) ||
-	    seteuid(pw->pw_uid) || setuid(pw->pw_uid))
-		error("can't drop privileges: %m");
 
 	endpwent();
 
 	setproctitle("%s", ifi->name);
 
+	/* setgroups(2) is not permitted in capability mode. */
+	if (setgroups(1, &pw->pw_gid) != 0)
+		error("can't restrict groups: %m");
+
 	if (caph_enter_casper() < 0)
 		error("can't enter capability mode: %m");
+
+	/*
+	 * If we are not in capability mode (i.e., Capsicum or libcasper is
+	 * disabled), try to restrict filesystem access.  This will fail if
+	 * kern.chroot_allow_open_directories is 0 or the process is jailed.
+	 */
+	if (cap_getmode(&capmode) < 0 || capmode == 0) {
+		if (chroot(_PATH_VAREMPTY) == -1)
+			error("chroot");
+		if (chdir("/") == -1)
+			error("chdir(\"/\")");
+	}
+
+	if (setegid(pw->pw_gid) || setgid(pw->pw_gid) ||
+	    seteuid(pw->pw_uid) || setuid(pw->pw_uid))
+		error("can't drop privileges: %m");
 
 	if (immediate_daemon)
 		go_daemon();
@@ -1917,12 +1928,10 @@ rewrite_client_leases(void)
 			error("can't create %s: %m", path_dhclient_db);
 		cap_rights_init(&rights, CAP_FCNTL, CAP_FSTAT, CAP_FSYNC,
 		    CAP_FTRUNCATE, CAP_SEEK, CAP_WRITE);
-		if (cap_rights_limit(fileno(leaseFile), &rights) < 0 &&
-		    errno != ENOSYS) {
+		if (caph_rights_limit(fileno(leaseFile), &rights) < 0) {
 			error("can't limit lease descriptor: %m");
 		}
-		if (cap_fcntls_limit(fileno(leaseFile), CAP_FCNTL_GETFL) < 0 &&
-		    errno != ENOSYS) {
+		if (caph_fcntls_limit(fileno(leaseFile), CAP_FCNTL_GETFL) < 0) {
 			error("can't limit lease descriptor fcntls: %m");
 		}
 	} else {
@@ -2451,10 +2460,9 @@ go_daemon(void)
 
 	if (pidfile != NULL) {
 		pidfile_write(pidfile);
-		if (cap_rights_limit(pidfile_fileno(pidfile), &rights) < 0 &&
-		    errno != ENOSYS) {
+
+		if (caph_rights_limit(pidfile_fileno(pidfile), &rights) < 0)
 			error("can't limit pidfile descriptor: %m");
-		}
 	}
 
 	if (nullfd != -1) {
@@ -2462,12 +2470,12 @@ go_daemon(void)
 		nullfd = -1;
 	}
 
-	if (cap_rights_limit(STDIN_FILENO, &rights) < 0 && errno != ENOSYS)
+	if (caph_rights_limit(STDIN_FILENO, &rights) < 0)
 		error("can't limit stdin: %m");
 	cap_rights_init(&rights, CAP_WRITE);
-	if (cap_rights_limit(STDOUT_FILENO, &rights) < 0 && errno != ENOSYS)
+	if (caph_rights_limit(STDOUT_FILENO, &rights) < 0)
 		error("can't limit stdout: %m");
-	if (cap_rights_limit(STDERR_FILENO, &rights) < 0 && errno != ENOSYS)
+	if (caph_rights_limit(STDERR_FILENO, &rights) < 0)
 		error("can't limit stderr: %m");
 }
 

@@ -1022,12 +1022,8 @@ bcm_sdhost_read_multi_4(device_t dev, struct sdhci_slot *slot, bus_size_t off,
 	for (i = 0; i < count;) {
 		edm = RD4(sc, HC_DEBUG);
 		avail = ((edm >> 4) & 0x1f);
-		if (i + avail > count) {
-			if (i >= count)
-				return;
-			else
-				avail = count - i;
-		}
+		if (i + avail > count)
+			avail = count - i;
 		if (avail > 0)
 			bus_space_read_multi_4(sc->sc_bst, sc->sc_bsh,
 			    HC_DATAPORT, data + i, avail);
@@ -1234,12 +1230,8 @@ bcm_sdhost_write_multi_4(device_t dev, struct sdhci_slot *slot,
 	for (i = 0; i < count;) {
 		edm = RD4(sc, HC_DEBUG);
 		space = HC_FIFO_SIZE - ((edm >> 4) & 0x1f);
-		if (i + space > count) {
-			if (i >= count)
-				return;
-			else
-				space = count - i;
-		}
+		if (i + space > count)
+			space = count - i;
 		if (space > 0)
 			bus_space_write_multi_4(sc->sc_bst, sc->sc_bsh,
 			    HC_DATAPORT, data + i, space);
@@ -1295,7 +1287,7 @@ static driver_t bcm_sdhost_driver = {
 
 DRIVER_MODULE(sdhost_bcm, simplebus, bcm_sdhost_driver, bcm_sdhost_devclass,
     NULL, NULL);
-MODULE_DEPEND(sdhost_bcm, sdhci, 1, 1, 1);
+SDHCI_DEPEND(sdhost_bcm);
 #ifndef MMCCAM
 MMC_DECLARE_BRIDGE(sdhost_bcm);
 #endif

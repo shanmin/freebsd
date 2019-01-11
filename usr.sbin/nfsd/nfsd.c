@@ -160,10 +160,8 @@ main(int argc, char **argv)
 	struct addrinfo *ai_udp, *ai_tcp, *ai_udp6, *ai_tcp6, hints;
 	struct netconfig *nconf_udp, *nconf_tcp, *nconf_udp6, *nconf_tcp6;
 	struct netbuf nb_udp, nb_tcp, nb_udp6, nb_tcp6;
-	struct sockaddr_in inetpeer;
-	struct sockaddr_in6 inet6peer;
+	struct sockaddr_storage peer;
 	fd_set ready, sockbits;
-	fd_set v4bits, v6bits;
 	int ch, connect_type_cnt, i, maxsock, msgsock;
 	socklen_t len;
 	int on = 1, unregister, reregister, sock;
@@ -480,8 +478,6 @@ main(int argc, char **argv)
 	}
 
 	(void)signal(SIGUSR1, cleanup);
-	FD_ZERO(&v4bits);
-	FD_ZERO(&v6bits);
 	FD_ZERO(&sockbits);
  
 	rpcbregcnt = 0;
@@ -663,7 +659,6 @@ main(int argc, char **argv)
 				}
 				freeaddrinfo(ai_tcp);
 				FD_SET(tcpsock, &sockbits);
-				FD_SET(tcpsock, &v4bits); 
 				maxsock = tcpsock;
 				connect_type_cnt++;
 			}
@@ -742,7 +737,6 @@ main(int argc, char **argv)
 				}
 				freeaddrinfo(ai_tcp6);
 				FD_SET(tcp6sock, &sockbits);
-				FD_SET(tcp6sock, &v6bits);
 				if (maxsock < tcp6sock)
 					maxsock = tcp6sock;
 				connect_type_cnt++;
@@ -816,52 +810,25 @@ main(int argc, char **argv)
 		}
 		for (tcpsock = 0; tcpsock <= maxsock; tcpsock++) {
 			if (FD_ISSET(tcpsock, &ready)) {
-				if (FD_ISSET(tcpsock, &v4bits)) {
-					len = sizeof(inetpeer);
-					if ((msgsock = accept(tcpsock,
-					    (struct sockaddr *)&inetpeer, &len)) < 0) {
-						error = errno;
-						syslog(LOG_ERR, "accept failed: %m");
-						if (error == ECONNABORTED ||
-						    error == EINTR)
-							continue;
-						nfsd_exit(1);
-					}
-					memset(inetpeer.sin_zero, 0,
-						sizeof(inetpeer.sin_zero));
-					if (setsockopt(msgsock, SOL_SOCKET,
-					    SO_KEEPALIVE, (char *)&on, sizeof(on)) < 0)
-						syslog(LOG_ERR,
-						    "setsockopt SO_KEEPALIVE: %m");
-					addsockargs.sock = msgsock;
-					addsockargs.name = (caddr_t)&inetpeer;
-					addsockargs.namelen = len;
-					nfssvc(nfssvc_addsock, &addsockargs);
-					(void)close(msgsock);
-				} else if (FD_ISSET(tcpsock, &v6bits)) {
-					len = sizeof(inet6peer);
-					if ((msgsock = accept(tcpsock,
-					    (struct sockaddr *)&inet6peer,
-					    &len)) < 0) {
-						error = errno;
-						syslog(LOG_ERR,
-						     "accept failed: %m");
-						if (error == ECONNABORTED ||
-						    error == EINTR)
-							continue;
-						nfsd_exit(1);
-					}
-					if (setsockopt(msgsock, SOL_SOCKET,
-					    SO_KEEPALIVE, (char *)&on,
-					    sizeof(on)) < 0)
-						syslog(LOG_ERR, "setsockopt "
-						    "SO_KEEPALIVE: %m");
-					addsockargs.sock = msgsock;
-					addsockargs.name = (caddr_t)&inet6peer;
-					addsockargs.namelen = len;
-					nfssvc(nfssvc_addsock, &addsockargs);
-					(void)close(msgsock);
+				len = sizeof(peer);
+				if ((msgsock = accept(tcpsock,
+				    (struct sockaddr *)&peer, &len)) < 0) {
+					error = errno;
+					syslog(LOG_ERR, "accept failed: %m");
+					if (error == ECONNABORTED ||
+					    error == EINTR)
+						continue;
+					nfsd_exit(1);
 				}
+				if (setsockopt(msgsock, SOL_SOCKET,
+				    SO_KEEPALIVE, (char *)&on, sizeof(on)) < 0)
+					syslog(LOG_ERR,
+					    "setsockopt SO_KEEPALIVE: %m");
+				addsockargs.sock = msgsock;
+				addsockargs.name = (caddr_t)&peer;
+				addsockargs.namelen = len;
+				nfssvc(nfssvc_addsock, &addsockargs);
+				(void)close(msgsock);
 			}
 		}
 	}
@@ -1179,14 +1146,16 @@ backup_stable(__unused int signo)
 static void
 parse_dsserver(const char *optionarg, struct nfsd_nfsd_args *nfsdargp)
 {
-	char *ad, *cp, *cp2, *dsaddr, *dshost, *dspath, *dsvol, nfsprt[9];
-	char *mdspath, *mdsp;
+	char *cp, *cp2, *dsaddr, *dshost, *dspath, *dsvol, nfsprt[9];
+	char *mdspath, *mdsp, ip6[INET6_ADDRSTRLEN];
+	const char *ad;
 	int ecode;
 	u_int adsiz, dsaddrcnt, dshostcnt, dspathcnt, hostsiz, pathsiz;
 	u_int mdspathcnt;
 	size_t dsaddrsiz, dshostsiz, dspathsiz, nfsprtsiz, mdspathsiz;
-	struct addrinfo hints, *ai_tcp;
+	struct addrinfo hints, *ai_tcp, *res;
 	struct sockaddr_in sin;
+	struct sockaddr_in6 sin6;
 
 	cp = strdup(optionarg);
 	if (cp == NULL)
@@ -1275,22 +1244,55 @@ parse_dsserver(const char *optionarg, struct nfsd_nfsd_args *nfsdargp)
 
 		/* Get the fully qualified domain name and IP address. */
 		memset(&hints, 0, sizeof(hints));
-		hints.ai_flags = AI_CANONNAME;
-		hints.ai_family = AF_INET;
+		hints.ai_flags = AI_CANONNAME | AI_ADDRCONFIG;
+		hints.ai_family = PF_UNSPEC;
 		hints.ai_socktype = SOCK_STREAM;
 		hints.ai_protocol = IPPROTO_TCP;
 		ecode = getaddrinfo(cp, NULL, &hints, &ai_tcp);
 		if (ecode != 0)
 			err(1, "getaddrinfo pnfs: %s %s", cp,
 			    gai_strerror(ecode));
-		if (ai_tcp->ai_addr->sa_family != AF_INET ||
-		    ai_tcp->ai_addrlen < sizeof(sin))
-			err(1, "getaddrinfo() returned non-INET address");
-		/* Mips cares about sockaddr_in alignment, so copy the addr. */
-		memcpy(&sin, ai_tcp->ai_addr, sizeof(sin));
+		ad = NULL;
+		for (res = ai_tcp; res != NULL; res = res->ai_next) {
+			if (res->ai_addr->sa_family == AF_INET) {
+				if (res->ai_addrlen < sizeof(sin))
+					err(1, "getaddrinfo() returned "
+					    "undersized IPv4 address");
+				/*
+				 * Mips cares about sockaddr_in alignment,
+				 * so copy the address.
+				 */
+				memcpy(&sin, res->ai_addr, sizeof(sin));
+				ad = inet_ntoa(sin.sin_addr);
+				break;
+			} else if (res->ai_family == AF_INET6) {
+				if (res->ai_addrlen < sizeof(sin6))
+					err(1, "getaddrinfo() returned "
+					    "undersized IPv6 address");
+				/*
+				 * Mips cares about sockaddr_in6 alignment,
+				 * so copy the address.
+				 */
+				memcpy(&sin6, res->ai_addr, sizeof(sin6));
+				ad = inet_ntop(AF_INET6, &sin6.sin6_addr, ip6,
+				    sizeof(ip6));
+
+				/*
+				 * XXX
+				 * Since a link local address will only
+				 * work if the client and DS are in the
+				 * same scope zone, only use it if it is
+				 * the only address.
+				 */
+				if (ad != NULL &&
+				    !IN6_IS_ADDR_LINKLOCAL(&sin6.sin6_addr))
+					break;
+			}
+		}
+		if (ad == NULL)
+			err(1, "No IP address for %s", cp);
 
 		/* Append this address to dsaddr. */
-		ad = inet_ntoa(sin.sin_addr);
 		adsiz = strlen(ad);
 		if (dsaddrcnt + adsiz + nfsprtsiz + 1 > dsaddrsiz) {
 			dsaddrsiz *= 2;

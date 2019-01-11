@@ -150,7 +150,7 @@ static const struct encap_config ipv6_encap_cfg = {
 };
 
 
-static VNET_DEFINE(int, ip6_mrouter_ver) = 0;
+VNET_DEFINE_STATIC(int, ip6_mrouter_ver) = 0;
 #define	V_ip6_mrouter_ver	VNET(ip6_mrouter_ver)
 
 SYSCTL_DECL(_net_inet6);
@@ -203,7 +203,8 @@ sysctl_mif6table(SYSCTL_HANDLER_ARGS)
 	struct mif6_sctl *out;
 	int error;
 
-	out = malloc(sizeof(struct mif6_sctl) * MAXMIFS, M_TEMP, M_WAITOK);
+	out = malloc(sizeof(struct mif6_sctl) * MAXMIFS, M_TEMP,
+	    M_WAITOK | M_ZERO);
 	for (int i = 0; i < MAXMIFS; i++) {
 		out[i].m6_flags		= mif6table[i].m6_flags;
 		out[i].m6_rate_limit	= mif6table[i].m6_rate_limit;
@@ -235,7 +236,7 @@ static struct mtx mif6_mtx;
 #define	MIF6_LOCK_DESTROY()	mtx_destroy(&mif6_mtx)
 
 #ifdef MRT6DEBUG
-static VNET_DEFINE(u_int, mrt6debug) = 0;	/* debug level */
+VNET_DEFINE_STATIC(u_int, mrt6debug) = 0;	/* debug level */
 #define	V_mrt6debug		VNET(mrt6debug)
 #define DEBUG_MFC	0x02
 #define DEBUG_FORWARD	0x04
@@ -288,7 +289,7 @@ SYSCTL_STRUCT(_net_inet6_pim, PIM6CTL_STATS, stats, CTLFLAG_RW,
     "PIM Statistics (struct pim6stat, netinet6/pim6_var.h)");
 
 #define	PIM6STAT_INC(name)	pim6stat.name += 1
-static VNET_DEFINE(int, pim6);
+VNET_DEFINE_STATIC(int, pim6);
 #define	V_pim6		VNET(pim6)
 
 /*

@@ -379,7 +379,8 @@ struct uio;
 /*
  * From uipc_socket and friends
  */
-int	getsockaddr(struct sockaddr **namp, caddr_t uaddr, size_t len);
+int	getsockaddr(struct sockaddr **namp, const struct sockaddr *uaddr,
+	    size_t len);
 int	getsock_cap(struct thread *td, int fd, cap_rights_t *rightsp,
 	    struct file **fpp, u_int *fflagp, struct filecaps *havecaps);
 void	soabort(struct socket *so);
@@ -475,14 +476,8 @@ int	accept_filt_generic_mod_event(module_t mod, int event, void *data);
  */
 struct xsocket {
 	ksize_t		xso_len;	/* length of this structure */
-	union {
-		kvaddr_t xso_so;	/* kernel address of struct socket */
-		int64_t ph_so;
-	};
-	union {
-		kvaddr_t so_pcb;	/* kernel address of struct inpcb */
-		int64_t ph_pcb;
-	};
+	kvaddr_t	xso_so;		/* kernel address of struct socket */
+	kvaddr_t	so_pcb;		/* kernel address of struct inpcb */
 	uint64_t	so_oobmark;
 	int64_t		so_spare64[8];
 	int32_t		xso_protocol;

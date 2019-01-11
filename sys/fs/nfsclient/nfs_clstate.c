@@ -125,7 +125,6 @@ static struct nfscldeleg *nfscl_finddeleg(struct nfsclclient *, u_int8_t *,
 static void nfscl_retoncloselayout(vnode_t, struct nfsclclient *, uint8_t *,
     int, struct nfsclrecalllayout **);
 static void nfscl_reldevinfo_locked(struct nfscldevinfo *);
-static void nfscl_cancelreqs(struct nfsclds *);
 static struct nfscllayout *nfscl_findlayout(struct nfsclclient *, u_int8_t *,
     int);
 static struct nfscldevinfo *nfscl_finddevinfo(struct nfsclclient *, uint8_t *);
@@ -1891,8 +1890,7 @@ nfscl_umount(struct nfsmount *nmp, NFSPROC_T *p)
 	 * mutex for NFSLOCKCLSTATE(), so it is "m" for the following
 	 * explanation, courtesy of Alan Cox.
 	 * What follows is a snippet from Alan Cox's email at:
-	 * http://docs.FreeBSD.org/cgi/
-	 *     mid.cgi?BANLkTikR3d65zPHo9==08ZfJ2vmqZucEvw
+	 * https://docs.FreeBSD.org/cgi/mid.cgi?BANLkTikR3d65zPHo9==08ZfJ2vmqZucEvw
 	 * 
 	 * 1. Set MNTK_UNMOUNTF
 	 * 2. Acquire a standard FreeBSD mutex "m".
@@ -3239,7 +3237,7 @@ nfscl_docb(struct nfsrv_descript *nd, NFSPROC_T *p)
 	u_int32_t *tl;
 	struct nfsclclient *clp;
 	struct nfscldeleg *dp = NULL;
-	int numops, taglen = -1, error = 0, trunc;
+	int numops, taglen = -1, error = 0, trunc __unused;
 	u_int32_t minorvers = 0, retops = 0, *retopsp = NULL, *repp, cbident;
 	u_char tag[NFSV4_SMALLSTR + 1], *tagstr;
 	vnode_t vp = NULL;
@@ -3249,7 +3247,7 @@ nfscl_docb(struct nfsrv_descript *nd, NFSPROC_T *p)
 	mount_t mp;
 	nfsattrbit_t attrbits, rattrbits;
 	nfsv4stateid_t stateid;
-	uint32_t seqid, slotid = 0, highslot, cachethis;
+	uint32_t seqid, slotid = 0, highslot, cachethis __unused;
 	uint8_t sessionid[NFSX_V4SESSIONID];
 	struct mbuf *rep;
 	struct nfscllayout *lyp;
@@ -5001,16 +4999,17 @@ nfscl_dserr(uint32_t op, uint32_t stat, struct nfscldevinfo *dp,
 		free(recallp, M_NFSLAYRECALL);
 	}
 
-	/* If the connection isn't used for other DSs, we can shut it down. */
-	if ((dsp->nfsclds_flags & NFSCLDS_SAMECONN) == 0)
-		nfscl_cancelreqs(dsp);
+	/* And shut the TCP connection down. */
+	nfscl_cancelreqs(dsp);
 }
 
 /*
  * Cancel all RPCs for this "dsp" by closing the connection.
  * Also, mark the session as defunct.
+ * If NFSCLDS_SAMECONN is set, the connection is shared with other DSs and
+ * cannot be shut down.
  */
-static void
+APPLESTATIC void
 nfscl_cancelreqs(struct nfsclds *dsp)
 {
 	struct __rpc_client *cl;
@@ -5152,7 +5151,7 @@ nfscl_mergeflayouts(struct nfsclflayouthead *fhlp,
  * This function consumes the structure pointed at by dip, if not NULL.
  */
 APPLESTATIC int
-nfscl_adddevinfo(struct nfsmount *nmp, struct nfscldevinfo *dip,
+nfscl_adddevinfo(struct nfsmount *nmp, struct nfscldevinfo *dip, int ind,
     struct nfsclflayout *flp)
 {
 	struct nfsclclient *clp;
@@ -5170,11 +5169,14 @@ nfscl_adddevinfo(struct nfsmount *nmp, struct nfscldevinfo *dip,
 	if ((flp->nfsfl_flags & NFSFL_FILE) != 0)
 		dev = flp->nfsfl_dev;
 	else
-		dev = flp->nfsfl_ffm[0].dev;
+		dev = flp->nfsfl_ffm[ind].dev;
 	tdip = nfscl_finddevinfo(clp, dev);
 	if (tdip != NULL) {
 		tdip->nfsdi_layoutrefs++;
-		flp->nfsfl_devp = tdip;
+		if ((flp->nfsfl_flags & NFSFL_FILE) != 0)
+			flp->nfsfl_devp = tdip;
+		else
+			flp->nfsfl_ffm[ind].devp = tdip;
 		nfscl_reldevinfo_locked(tdip);
 		NFSUNLOCKCLSTATE();
 		if (dip != NULL)
@@ -5184,7 +5186,10 @@ nfscl_adddevinfo(struct nfsmount *nmp, struct nfscldevinfo *dip,
 	if (dip != NULL) {
 		LIST_INSERT_HEAD(&clp->nfsc_devinfo, dip, nfsdi_list);
 		dip->nfsdi_layoutrefs = 1;
-		flp->nfsfl_devp = dip;
+		if ((flp->nfsfl_flags & NFSFL_FILE) != 0)
+			flp->nfsfl_devp = dip;
+		else
+			flp->nfsfl_ffm[ind].devp = dip;
 	}
 	NFSUNLOCKCLSTATE();
 	if (dip == NULL)
@@ -5225,15 +5230,19 @@ nfscl_freeflayout(struct nfsclflayout *flp)
 {
 	int i, j;
 
-	if ((flp->nfsfl_flags & NFSFL_FILE) != 0)
+	if ((flp->nfsfl_flags & NFSFL_FILE) != 0) {
 		for (i = 0; i < flp->nfsfl_fhcnt; i++)
 			free(flp->nfsfl_fh[i], M_NFSFH);
+		if (flp->nfsfl_devp != NULL)
+			flp->nfsfl_devp->nfsdi_layoutrefs--;
+	}
 	if ((flp->nfsfl_flags & NFSFL_FLEXFILE) != 0)
-		for (i = 0; i < flp->nfsfl_mirrorcnt; i++)
+		for (i = 0; i < flp->nfsfl_mirrorcnt; i++) {
 			for (j = 0; j < flp->nfsfl_ffm[i].fhcnt; j++)
 				free(flp->nfsfl_ffm[i].fh[j], M_NFSFH);
-	if (flp->nfsfl_devp != NULL)
-		flp->nfsfl_devp->nfsdi_layoutrefs--;
+			if (flp->nfsfl_ffm[i].devp != NULL)	
+				flp->nfsfl_ffm[i].devp->nfsdi_layoutrefs--;	
+		}
 	free(flp, M_NFSFLAYOUT);
 }
 

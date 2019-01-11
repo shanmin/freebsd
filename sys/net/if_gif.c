@@ -110,7 +110,7 @@ static int	gif_transmit(struct ifnet *, struct mbuf *);
 static void	gif_qflush(struct ifnet *);
 static int	gif_clone_create(struct if_clone *, int, caddr_t);
 static void	gif_clone_destroy(struct ifnet *);
-static VNET_DEFINE(struct if_clone *, gif_cloner);
+VNET_DEFINE_STATIC(struct if_clone *, gif_cloner);
 #define	V_gif_cloner	VNET(gif_cloner)
 
 SYSCTL_DECL(_net_link);
@@ -127,7 +127,7 @@ static SYSCTL_NODE(_net_link, IFT_GIF, gif, CTLFLAG_RW, 0,
  */
 #define MAX_GIF_NEST 1
 #endif
-static VNET_DEFINE(int, max_gif_nesting) = MAX_GIF_NEST;
+VNET_DEFINE_STATIC(int, max_gif_nesting) = MAX_GIF_NEST;
 #define	V_max_gif_nesting	VNET(max_gif_nesting)
 SYSCTL_INT(_net_link_gif, OID_AUTO, max_nesting, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(max_gif_nesting), 0, "Max nested tunnels");
@@ -272,6 +272,7 @@ gif_transmit(struct ifnet *ifp, struct mbuf *m)
 	uint8_t proto, ecn;
 	int error;
 
+	GIF_RLOCK();
 #ifdef MAC
 	error = mac_ifnet_check_transmit(ifp, m);
 	if (error) {
@@ -280,10 +281,10 @@ gif_transmit(struct ifnet *ifp, struct mbuf *m)
 	}
 #endif
 	error = ENETDOWN;
-	GIF_RLOCK();
 	sc = ifp->if_softc;
 	if ((ifp->if_flags & IFF_MONITOR) != 0 ||
 	    (ifp->if_flags & IFF_UP) == 0 ||
+	    (ifp->if_drv_flags & IFF_DRV_RUNNING) == 0 ||
 	    sc->gif_family == 0 ||
 	    (error = if_tunnel_check_nesting(ifp, m, MTAG_GIF,
 		V_max_gif_nesting)) != 0) {
@@ -674,7 +675,6 @@ gif_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		    cmd == SIOCSIFPHYADDR_IN6 ||
 #endif
 		    0) {
-			ifp->if_drv_flags |= IFF_DRV_RUNNING;
 			if_link_state_change(ifp, LINK_STATE_UP);
 		}
 	}
@@ -689,6 +689,7 @@ gif_delete_tunnel(struct gif_softc *sc)
 
 	sx_assert(&gif_ioctl_sx, SA_XLOCKED);
 	if (sc->gif_family != 0) {
+		CK_LIST_REMOVE(sc, srchash);
 		CK_LIST_REMOVE(sc, chain);
 		/* Wait until it become safe to free gif_hdr */
 		GIF_WAIT();

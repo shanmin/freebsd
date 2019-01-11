@@ -90,7 +90,7 @@ SVCPOOL		*nfsrvd_pool;
 static int	nfs_privport = 0;
 SYSCTL_INT(_vfs_nfsd, OID_AUTO, nfs_privport, CTLFLAG_RWTUN,
     &nfs_privport, 0,
-    "Only allow clients using a privileged port for NFSv2 and 3");
+    "Only allow clients using a privileged port for NFSv2, 3 and 4");
 
 static int	nfs_minvers = NFS_VER2;
 SYSCTL_INT(_vfs_nfsd, OID_AUTO, server_min_nfsvers, CTLFLAG_RWTUN,
@@ -107,6 +107,9 @@ extern u_long sb_max_adj;
 extern int newnfs_numnfsd;
 extern struct proc *nfsd_master_proc;
 extern time_t nfsdev_time;
+extern int nfsrv_writerpc[NFS_NPROCS];
+extern volatile int nfsrv_devidcnt;
+extern struct nfsv4_opflag nfsv4_opflag[NFSV41_NOPS];
 
 /*
  * NFS server system calls
@@ -163,7 +166,7 @@ nfssvc_program(struct svc_req *rqst, SVCXPRT *xprt)
 	nd.nd_mreq = NULL;
 	nd.nd_cred = NULL;
 
-	if (nfs_privport && (nd.nd_flag & ND_NFSV4) == 0) {
+	if (nfs_privport != 0) {
 		/* Check if source port is privileged */
 		u_short port;
 		struct sockaddr *nam = nd.nd_nam;
@@ -527,8 +530,21 @@ nfsrvd_nfsd(struct thread *td, struct nfsd_nfsd_args *args)
 			nfsrvd_pool->sp_minthreads = args->minthreads;
 			nfsrvd_pool->sp_maxthreads = args->maxthreads;
 				
+			/*
+			 * If this is a pNFS service, make Getattr do a
+			 * vn_start_write(), so it can do a vn_set_extattr().
+			 */
+			if (nfsrv_devidcnt > 0) {
+				nfsrv_writerpc[NFSPROC_GETATTR] = 1;
+				nfsv4_opflag[NFSV4OP_GETATTR].modifyfs = 1;
+			}
+
 			svc_run(nfsrvd_pool);
 	
+			/* Reset Getattr to not do a vn_start_write(). */
+			nfsrv_writerpc[NFSPROC_GETATTR] = 0;
+			nfsv4_opflag[NFSV4OP_GETATTR].modifyfs = 0;
+
 			if (principal[0] != '\0') {
 				rpc_gss_clear_svc_name_call(NFS_PROG, NFS_VER2);
 				rpc_gss_clear_svc_name_call(NFS_PROG, NFS_VER3);

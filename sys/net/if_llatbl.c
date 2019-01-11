@@ -64,7 +64,7 @@ __FBSDID("$FreeBSD$");
 
 MALLOC_DEFINE(M_LLTABLE, "lltable", "link level address tables");
 
-static VNET_DEFINE(SLIST_HEAD(, lltable), lltables) =
+VNET_DEFINE_STATIC(SLIST_HEAD(, lltable), lltables) =
     SLIST_HEAD_INITIALIZER(lltables);
 #define	V_lltables	VNET(lltables)
 
@@ -90,6 +90,7 @@ static int htable_foreach_lle(struct lltable *llt, llt_foreach_cb_t *f,
 static int
 lltable_dump_af(struct lltable *llt, struct sysctl_req *wr)
 {
+	struct epoch_tracker et;
 	int error;
 
 	LLTABLE_LIST_LOCK_ASSERT();
@@ -98,10 +99,10 @@ lltable_dump_af(struct lltable *llt, struct sysctl_req *wr)
 		return (0);
 	error = 0;
 
-	IF_AFDATA_RLOCK(llt->llt_ifp);
+	NET_EPOCH_ENTER(et);
 	error = lltable_foreach_lle(llt,
 	    (llt_foreach_cb_t *)llt->llt_dump_entry, wr);
-	IF_AFDATA_RUNLOCK(llt->llt_ifp);
+	NET_EPOCH_EXIT(et);
 
 	return (error);
 }
@@ -436,6 +437,9 @@ llentry_free(struct llentry *lle)
 
 	pkts_dropped = lltable_drop_entry_queue(lle);
 
+	/* cancel timer */
+	if (callout_stop(&lle->lle_timer) > 0)
+		LLE_REMREF(lle);
 	LLE_FREE_LOCKED(lle);
 
 	return (pkts_dropped);
@@ -450,11 +454,12 @@ struct llentry *
 llentry_alloc(struct ifnet *ifp, struct lltable *lt,
     struct sockaddr_storage *dst)
 {
+	struct epoch_tracker et;
 	struct llentry *la, *la_tmp;
 
-	IF_AFDATA_RLOCK(ifp);
+	NET_EPOCH_ENTER(et);
 	la = lla_lookup(lt, LLE_EXCLUSIVE, (struct sockaddr *)dst);
-	IF_AFDATA_RUNLOCK(ifp);
+	NET_EPOCH_EXIT(et);
 
 	if (la != NULL) {
 		LLE_ADDREF(la);
@@ -522,8 +527,6 @@ lltable_free(struct lltable *llt)
 	IF_AFDATA_WUNLOCK(llt->llt_ifp);
 
 	CK_LIST_FOREACH_SAFE(lle, &dchain, lle_chain, next) {
-		if (callout_stop(&lle->lle_timer) > 0)
-			LLE_REMREF(lle);
 		llentry_free(lle);
 	}
 

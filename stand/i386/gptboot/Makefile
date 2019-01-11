@@ -7,8 +7,6 @@
 FILES=		gptboot
 MAN=		gptboot.8
 
-NM?=		nm
-
 BOOT_COMCONSOLE_PORT?= 0x3f8
 BOOT_COMCONSOLE_SPEED?= 9600
 B2SIOFMT?=	0x3
@@ -65,6 +63,3 @@ gptboot.out: ${BTXCRT} gptboot.o sio.o crc32.o drv.o cons.o ${OPENCRYPTO_XTS}
 	${LD} ${LD_FLAGS} -Ttext ${ORG2} -o ${.TARGET} ${.ALLSRC} ${LIBSA32}
 
 .include <bsd.prog.mk>
-
-# XXX: clang integrated-as doesn't grok .codeNN directives yet
-CFLAGS.gptldr.S=	${CLANG_NO_IAS}

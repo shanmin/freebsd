@@ -240,6 +240,7 @@ lidl [label="Kurt Lidl\nlidl@FreeBSD.org\n2015/10/21"]
 loos [label="Luiz Otavio O Souza\nloos@FreeBSD.org\n2013/07/03"]
 lstewart [label="Lawrence Stewart\nlstewart@FreeBSD.org\n2008/10/06"]
 luporl [label="Leandro Lupori\nluporl@FreeBSD.org\n2018/05/21"]
+lwhsu [label="Li-Wen Hsu\nlwhsu@FreeBSD.org\n2018/08/09"]
 manu [label="Emmanuel Vadot\nmanu@FreeBSD.org\n2016/04/24"]
 marcel [label="Marcel Moolenaar\nmarcel@FreeBSD.org\n1999/07/03"]
 marius [label="Marius Strobl\nmarius@FreeBSD.org\n2004/04/17"]
@@ -265,7 +266,7 @@ mr [label="Michael Reifenberger\nmr@FreeBSD.org\n2001/09/30"]
 mw [label="Marcin Wojtas\nmw@FreeBSD.org\n2017/07/18"]
 neel [label="Neel Natu\nneel@FreeBSD.org\n2009/09/20"]
 netchild [label="Alexander Leidinger\nnetchild@FreeBSD.org\n2005/03/31"]
-ngie [label="Ngie Cooper\nngie@FreeBSD.org\n2014/07/27"]
+ngie [label="Enji Cooper\nngie@FreeBSD.org\n2014/07/27"]
 nork [label="Norikatsu Shigemura\nnork@FreeBSD.org\n2009/06/09"]
 np [label="Navdeep Parhar\nnp@FreeBSD.org\n2009/06/05"]
 nwhitehorn [label="Nathan Whitehorn\nnwhitehorn@FreeBSD.org\n2008/07/03"]
@@ -357,6 +358,7 @@ wollman [label="Garrett Wollman\nwollman@FreeBSD.org\n????/??/??"]
 wsalamon [label="Wayne Salamon\nwsalamon@FreeBSD.org\n2005/06/25"]
 wulf [label="Vladimir Kondratyev\nwulf@FreeBSD.org\n2017/04/27"]
 yongari [label="Pyun YongHyeon\nyongari@FreeBSD.org\n2004/08/01"]
+yuripv [label="Yuri Pankov\nyuripv@FreeBSD.org\n2018/10/09"]
 zbb [label="Zbigniew Bodek\nzbb@FreeBSD.org\n2013/09/02"]
 zec [label="Marko Zec\nzec@FreeBSD.org\n2008/06/22"]
 zml [label="Zachary Loafman\nzml@FreeBSD.org\n2009/05/27"]
@@ -499,7 +501,9 @@ emaste -> achim
 emaste -> bwidawsk
 emaste -> dteske
 emaste -> kevans
+emaste -> lwhsu
 emaste -> markj
+emaste -> ngie
 emaste -> rstone
 
 emax -> markus
@@ -634,6 +638,7 @@ joerg -> le
 joerg -> netchild
 joerg -> schweikh
 
+jtl -> ngie
 jtl -> thj
 
 julian -> glebius
@@ -672,6 +677,7 @@ kib -> stas
 kib -> tijl
 kib -> trociny
 kib -> vangyzen
+kib -> yuripv
 kib -> zont
 
 kmacy -> lstewart
@@ -684,6 +690,7 @@ marcel -> nwhitehorn
 marcel -> sjg
 
 markj -> cem
+markj -> lwhsu
 markj -> rlibby
 
 markm -> jasone

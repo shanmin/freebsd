@@ -97,7 +97,7 @@ static struct {
 
 VNET_DEFINE(SLIST_HEAD(__trhead, lagg_softc), lagg_list); /* list of laggs */
 #define	V_lagg_list	VNET(lagg_list)
-static VNET_DEFINE(struct mtx, lagg_list_mtx);
+VNET_DEFINE_STATIC(struct mtx, lagg_list_mtx);
 #define	V_lagg_list_mtx	VNET(lagg_list_mtx)
 #define	LAGG_LIST_LOCK_INIT(x)		mtx_init(&V_lagg_list_mtx, \
 					"if_lagg list", NULL, MTX_DEF)
@@ -108,7 +108,7 @@ eventhandler_tag	lagg_detach_cookie = NULL;
 
 static int	lagg_clone_create(struct if_clone *, int, caddr_t);
 static void	lagg_clone_destroy(struct ifnet *);
-static VNET_DEFINE(struct if_clone *, lagg_cloner);
+VNET_DEFINE_STATIC(struct if_clone *, lagg_cloner);
 #define	V_lagg_cloner	VNET(lagg_cloner)
 static const char laggname[] = "lagg";
 
@@ -249,21 +249,21 @@ SYSCTL_NODE(_net_link, OID_AUTO, lagg, CTLFLAG_RW, 0,
     "Link Aggregation");
 
 /* Allow input on any failover links */
-static VNET_DEFINE(int, lagg_failover_rx_all);
+VNET_DEFINE_STATIC(int, lagg_failover_rx_all);
 #define	V_lagg_failover_rx_all	VNET(lagg_failover_rx_all)
 SYSCTL_INT(_net_link_lagg, OID_AUTO, failover_rx_all, CTLFLAG_RW | CTLFLAG_VNET,
     &VNET_NAME(lagg_failover_rx_all), 0,
     "Accept input from any interface in a failover lagg");
 
 /* Default value for using flowid */
-static VNET_DEFINE(int, def_use_flowid) = 0;
+VNET_DEFINE_STATIC(int, def_use_flowid) = 0;
 #define	V_def_use_flowid	VNET(def_use_flowid)
 SYSCTL_INT(_net_link_lagg, OID_AUTO, default_use_flowid, CTLFLAG_RWTUN,
     &VNET_NAME(def_use_flowid), 0,
     "Default setting for using flow id for load sharing");
 
 /* Default value for flowid shift */
-static VNET_DEFINE(int, def_flowid_shift) = 16;
+VNET_DEFINE_STATIC(int, def_flowid_shift) = 16;
 #define	V_def_flowid_shift	VNET(def_flowid_shift)
 SYSCTL_INT(_net_link_lagg, OID_AUTO, default_flowid_shift, CTLFLAG_RWTUN,
     &VNET_NAME(def_flowid_shift), 0,
@@ -633,10 +633,17 @@ lagg_port_create(struct lagg_softc *sc, struct ifnet *ifp)
 {
 	struct lagg_softc *sc_ptr;
 	struct lagg_port *lp, *tlp;
-	int error, i;
+	struct ifreq ifr;
+	int error, i, oldmtu;
 	uint64_t *pval;
 
 	LAGG_XLOCK_ASSERT(sc);
+
+	if (sc->sc_ifp == ifp) {
+		if_printf(sc->sc_ifp,
+		    "cannot add a lagg to itself as a port\n");
+		return (EINVAL);
+	}
 
 	/* Limit the maximal number of lagg ports */
 	if (sc->sc_count >= LAGG_MAX_PORTS)
@@ -656,12 +663,25 @@ lagg_port_create(struct lagg_softc *sc, struct ifnet *ifp)
 		return (EPROTONOSUPPORT);
 
 	/* Allow the first Ethernet member to define the MTU */
-	if (CK_SLIST_EMPTY(&sc->sc_ports))
+	oldmtu = -1;
+	if (CK_SLIST_EMPTY(&sc->sc_ports)) {
 		sc->sc_ifp->if_mtu = ifp->if_mtu;
-	else if (sc->sc_ifp->if_mtu != ifp->if_mtu) {
-		if_printf(sc->sc_ifp, "invalid MTU for %s\n",
-		    ifp->if_xname);
-		return (EINVAL);
+	} else if (sc->sc_ifp->if_mtu != ifp->if_mtu) {
+		if (ifp->if_ioctl == NULL) {
+			if_printf(sc->sc_ifp, "cannot change MTU for %s\n",
+			    ifp->if_xname);
+			return (EINVAL);
+		}
+		oldmtu = ifp->if_mtu;
+		strlcpy(ifr.ifr_name, ifp->if_xname, sizeof(ifr.ifr_name));
+		ifr.ifr_mtu = sc->sc_ifp->if_mtu;
+		error = (*ifp->if_ioctl)(ifp, SIOCSIFMTU, (caddr_t)&ifr);
+		if (error != 0) {
+			if_printf(sc->sc_ifp, "invalid MTU for %s\n",
+			    ifp->if_xname);
+			return (error);
+		}
+		ifr.ifr_mtu = oldmtu;
 	}
 
 	lp = malloc(sizeof(struct lagg_port), M_DEVBUF, M_WAITOK|M_ZERO);
@@ -673,6 +693,9 @@ lagg_port_create(struct lagg_softc *sc, struct ifnet *ifp)
 		if (ifp == sc_ptr->sc_ifp) {
 			LAGG_LIST_UNLOCK();
 			free(lp, M_DEVBUF);
+			if (oldmtu != -1)
+				(*ifp->if_ioctl)(ifp, SIOCSIFMTU,
+				    (caddr_t)&ifr);
 			return (EINVAL);
 			/* XXX disable stacking for the moment, its untested */
 #ifdef LAGG_PORT_STACKING
@@ -681,6 +704,9 @@ lagg_port_create(struct lagg_softc *sc, struct ifnet *ifp)
 			    LAGG_MAX_STACKING) {
 				LAGG_LIST_UNLOCK();
 				free(lp, M_DEVBUF);
+				if (oldmtu != -1)
+					(*ifp->if_ioctl)(ifp, SIOCSIFMTU,
+					    (caddr_t)&ifr);
 				return (E2BIG);
 			}
 #endif
@@ -746,6 +772,8 @@ lagg_port_create(struct lagg_softc *sc, struct ifnet *ifp)
 	if ((error = lagg_proto_addport(sc, lp)) != 0) {
 		/* Remove the port, without calling pr_delport. */
 		lagg_port_destroy(lp, 0);
+		if (oldmtu != -1)
+			(*ifp->if_ioctl)(ifp, SIOCSIFMTU, (caddr_t)&ifr);
 		return (error);
 	}
 
@@ -1464,8 +1492,31 @@ lagg_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		break;
 
 	case SIOCSIFMTU:
-		/* Do not allow the MTU to be directly changed */
-		error = EINVAL;
+		LAGG_XLOCK(sc);
+		CK_SLIST_FOREACH(lp, &sc->sc_ports, lp_entries) {
+			if (lp->lp_ioctl != NULL)
+				error = (*lp->lp_ioctl)(lp->lp_ifp, cmd, data);
+			else
+				error = EINVAL;
+			if (error != 0) {
+				if_printf(ifp,
+				    "failed to change MTU to %d on port %s, "
+				    "reverting all ports to original MTU (%d)\n",
+				    ifr->ifr_mtu, lp->lp_ifp->if_xname, ifp->if_mtu);
+				break;
+			}
+		}
+		if (error == 0) {
+			ifp->if_mtu = ifr->ifr_mtu;
+		} else {
+			/* set every port back to the original MTU */
+			ifr->ifr_mtu = ifp->if_mtu;
+			CK_SLIST_FOREACH(lp, &sc->sc_ports, lp_entries) {
+				if (lp->lp_ioctl != NULL)
+					(*lp->lp_ioctl)(lp->lp_ifp, cmd, data);
+			}
+		}
+		LAGG_XUNLOCK(sc);
 		break;
 
 	default:
@@ -1736,6 +1787,10 @@ lagg_linkstate(struct lagg_softc *sc)
 	uint64_t speed;
 
 	LAGG_XLOCK_ASSERT(sc);
+
+	/* LACP handles link state itself */
+	if (sc->sc_proto == LAGG_PROTO_LACP)
+		return;
 
 	/* Our link is considered up if at least one of our ports is active */
 	LAGG_RLOCK();
@@ -2029,15 +2084,18 @@ lagg_lb_porttable(struct lagg_softc *sc, struct lagg_port *lp)
 {
 	struct lagg_lb *lb = (struct lagg_lb *)sc->sc_psc;
 	struct lagg_port *lp_next;
-	int i = 0;
+	int i = 0, rv;
 
+	rv = 0;
 	bzero(&lb->lb_ports, sizeof(lb->lb_ports));
 	LAGG_RLOCK();
 	CK_SLIST_FOREACH(lp_next, &sc->sc_ports, lp_entries) {
 		if (lp_next == lp)
 			continue;
-		if (i >= LAGG_MAX_PORTS)
-			return (EINVAL);
+		if (i >= LAGG_MAX_PORTS) {
+			rv = EINVAL;
+			break;
+		}
 		if (sc->sc_ifflags & IFF_DEBUG)
 			printf("%s: port %s at index %d\n",
 			    sc->sc_ifname, lp_next->lp_ifp->if_xname, i);
@@ -2045,7 +2103,7 @@ lagg_lb_porttable(struct lagg_softc *sc, struct lagg_port *lp)
 	}
 	LAGG_RUNLOCK();
 
-	return (0);
+	return (rv);
 }
 
 static int

@@ -42,7 +42,7 @@ __FBSDID("$FreeBSD$");
 #endif
 
 #ifndef HEAP_SIZE
-#define	HEAP_SIZE	(1 * 1024 * 1024)
+#define	HEAP_SIZE	(2 * 1024 * 1024)
 #endif
 
 struct uboot_devdesc currdev;
@@ -497,6 +497,9 @@ main(int argc, char **argv)
 do_interact:
 	setenv("LINES", "24", 1);		/* optional */
 	setenv("prompt", "loader>", 1);
+#ifdef __powerpc__
+	setenv("usefdt", "1", 1);
+#endif
 
 	archsw.arch_loadaddr = uboot_loadaddr;
 	archsw.arch_getdev = uboot_getdev;

@@ -615,20 +615,25 @@ signotify(struct thread *td)
 	}
 }
 
+/*
+ * Returns 1 (true) if altstack is configured for the thread, and the
+ * passed stack bottom address falls into the altstack range.  Handles
+ * the 43 compat special case where the alt stack size is zero.
+ */
 int
 sigonstack(size_t sp)
 {
-	struct thread *td = curthread;
+	struct thread *td;
 
-	return ((td->td_pflags & TDP_ALTSTACK) ?
+	td = curthread;
+	if ((td->td_pflags & TDP_ALTSTACK) == 0)
+		return (0);
 #if defined(COMPAT_43)
-	    ((td->td_sigstk.ss_size == 0) ?
-		(td->td_sigstk.ss_flags & SS_ONSTACK) :
-		((sp - (size_t)td->td_sigstk.ss_sp) < td->td_sigstk.ss_size))
-#else
-	    ((sp - (size_t)td->td_sigstk.ss_sp) < td->td_sigstk.ss_size)
+	if (td->td_sigstk.ss_size == 0)
+		return ((td->td_sigstk.ss_flags & SS_ONSTACK) != 0);
 #endif
-	    : 0);
+	return (sp >= (size_t)td->td_sigstk.ss_sp &&
+	    sp < td->td_sigstk.ss_size + (size_t)td->td_sigstk.ss_sp);
 }
 
 static __inline int
@@ -1261,8 +1266,7 @@ kern_sigtimedwait(struct thread *td, sigset_t waitset, ksiginfo_t *ksi,
 		if (timeout->tv_nsec >= 0 && timeout->tv_nsec < 1000000000) {
 			timevalid = 1;
 			getnanouptime(&rts);
-			ets = rts;
-			timespecadd(&ets, timeout);
+			timespecadd(&rts, timeout, &ets);
 		}
 	}
 	ksiginfo_init(ksi);
@@ -1302,8 +1306,7 @@ kern_sigtimedwait(struct thread *td, sigset_t waitset, ksiginfo_t *ksi,
 				error = EAGAIN;
 				break;
 			}
-			ts = ets;
-			timespecsub(&ts, &rts);
+			timespecsub(&ets, &rts, &ts);
 			TIMESPEC_TO_TIMEVAL(&tv, &ts);
 			timo = tvtohz(&tv);
 		} else {
@@ -2844,6 +2847,8 @@ issignal(struct thread *td)
 			sig = ptracestop(td, sig, &ksi);
 			mtx_lock(&ps->ps_mtx);
 
+			td->td_si.si_signo = 0;
+
 			/* 
 			 * Keep looking if the debugger discarded or
 			 * replaced the signal.
@@ -3066,6 +3071,23 @@ postsig(int sig)
 	return (1);
 }
 
+void
+proc_wkilled(struct proc *p)
+{
+
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+	if ((p->p_flag & P_WKILLED) == 0) {
+		p->p_flag |= P_WKILLED;
+		/*
+		 * Notify swapper that there is a process to swap in.
+		 * The notification is racy, at worst it would take 10
+		 * seconds for the swapper process to notice.
+		 */
+		if ((p->p_flag & (P_INMEM | P_SWAPPINGIN)) == 0)
+			wakeup(&proc0);
+	}
+}
+
 /*
  * Kill the current process for stated reason.
  */
@@ -3076,9 +3098,10 @@ killproc(struct proc *p, char *why)
 	PROC_LOCK_ASSERT(p, MA_OWNED);
 	CTR3(KTR_PROC, "killproc: proc %p (pid %d, %s)", p, p->p_pid,
 	    p->p_comm);
-	log(LOG_ERR, "pid %d (%s), uid %d, was killed: %s\n", p->p_pid,
-	    p->p_comm, p->p_ucred ? p->p_ucred->cr_uid : -1, why);
-	p->p_flag |= P_WKILLED;
+	log(LOG_ERR, "pid %d (%s), jid %d, uid %d, was killed: %s\n",
+	    p->p_pid, p->p_comm, p->p_ucred->cr_prison->pr_id,
+	    p->p_ucred->cr_uid, why);
+	proc_wkilled(p);
 	kern_psignal(p, SIGKILL);
 }
 
@@ -3120,9 +3143,10 @@ sigexit(struct thread *td, int sig)
 			sig |= WCOREFLAG;
 		if (kern_logsigexit)
 			log(LOG_INFO,
-			    "pid %d (%s), uid %d: exited on signal %d%s\n",
-			    p->p_pid, p->p_comm,
-			    td->td_ucred ? td->td_ucred->cr_uid : -1,
+			    "pid %d (%s), jid %d, uid %d: exited on "
+			    "signal %d%s\n", p->p_pid, p->p_comm,
+			    p->p_ucred->cr_prison->pr_id,
+			    td->td_ucred->cr_uid,
 			    sig &~ WCOREFLAG,
 			    sig & WCOREFLAG ? " (core dumped)" : "");
 	} else
@@ -3214,11 +3238,7 @@ childproc_exited(struct proc *p)
 	sigparent(p, reason, status);
 }
 
-/*
- * We only have 1 character for the core count in the format
- * string, so the range will be 0-9
- */
-#define	MAX_NUM_CORE_FILES 10
+#define	MAX_NUM_CORE_FILES 100000
 #ifndef NUM_CORE_FILES
 #define	NUM_CORE_FILES 5
 #endif
@@ -3311,18 +3331,19 @@ vnode_close_locked(struct thread *td, struct vnode *vp)
 /*
  * If the core format has a %I in it, then we need to check
  * for existing corefiles before defining a name.
- * To do this we iterate over 0..num_cores to find a
+ * To do this we iterate over 0..ncores to find a
  * non-existing core file name to use. If all core files are
  * already used we choose the oldest one.
  */
 static int
 corefile_open_last(struct thread *td, char *name, int indexpos,
-    struct vnode **vpp)
+    int indexlen, int ncores, struct vnode **vpp)
 {
 	struct vnode *oldvp, *nextvp, *vp;
 	struct vattr vattr;
 	struct nameidata nd;
 	int error, i, flags, oflags, cmode;
+	char ch;
 	struct timespec lasttime;
 
 	nextvp = oldvp = NULL;
@@ -3330,9 +3351,13 @@ corefile_open_last(struct thread *td, char *name, int indexpos,
 	oflags = VN_OPEN_NOAUDIT | VN_OPEN_NAMECACHE |
 	    (capmode_coredump ? VN_OPEN_NOCAPCHECK : 0);
 
-	for (i = 0; i < num_cores; i++) {
+	for (i = 0; i < ncores; i++) {
 		flags = O_CREAT | FWRITE | O_NOFOLLOW;
-		name[indexpos] = '0' + i;
+
+		ch = name[indexpos + indexlen];
+		(void)snprintf(name + indexpos, indexlen + 1, "%.*u", indexlen,
+		    i);
+		name[indexpos + indexlen] = ch;
 
 		NDINIT(&nd, LOOKUP, NOFOLLOW, UIO_SYSSPACE, name, td);
 		error = vn_open_cred(&nd, &flags, cmode, oflags, td->td_ucred,
@@ -3402,12 +3427,14 @@ corefile_open(const char *comm, uid_t uid, pid_t pid, struct thread *td,
 	struct nameidata nd;
 	const char *format;
 	char *hostname, *name;
-	int cmode, error, flags, i, indexpos, oflags;
+	int cmode, error, flags, i, indexpos, indexlen, oflags, ncores;
 
 	hostname = NULL;
 	format = corefilename;
 	name = malloc(MAXPATHLEN, M_TEMP, M_WAITOK | M_ZERO);
+	indexlen = 0;
 	indexpos = -1;
+	ncores = num_cores;
 	(void)sbuf_new(&sb, name, MAXPATHLEN, SBUF_FIXEDLEN);
 	sx_slock(&corefilename_lock);
 	for (i = 0; format[i] != '\0'; i++) {
@@ -3428,8 +3455,14 @@ corefile_open(const char *comm, uid_t uid, pid_t pid, struct thread *td,
 				sbuf_printf(&sb, "%s", hostname);
 				break;
 			case 'I':	/* autoincrementing index */
-				sbuf_printf(&sb, "0");
-				indexpos = sbuf_len(&sb) - 1;
+				if (indexpos != -1) {
+					sbuf_printf(&sb, "%%I");
+					break;
+				}
+
+				indexpos = sbuf_len(&sb);
+				sbuf_printf(&sb, "%u", ncores - 1);
+				indexlen = sbuf_len(&sb) - indexpos;
 				break;
 			case 'N':	/* process name */
 				sbuf_printf(&sb, "%s", comm);
@@ -3469,7 +3502,8 @@ corefile_open(const char *comm, uid_t uid, pid_t pid, struct thread *td,
 	sbuf_delete(&sb);
 
 	if (indexpos != -1) {
-		error = corefile_open_last(td, name, indexpos, vpp);
+		error = corefile_open_last(td, name, indexpos, indexlen, ncores,
+		    vpp);
 		if (error != 0) {
 			log(LOG_ERR,
 			    "pid %d (%s), uid (%u):  Path `%s' failed "

@@ -709,6 +709,13 @@ cpu_idle_tun(void *unused __unused)
 
 	if (TUNABLE_STR_FETCH("machdep.idle", tunvar, sizeof(tunvar)))
 		cpu_idle_selector(tunvar);
+	else if (cpu_vendor_id == CPU_VENDOR_AMD &&
+	    CPUID_TO_FAMILY(cpu_id) == 0x17 && CPUID_TO_MODEL(cpu_id) == 0x1) {
+		/* Ryzen erratas 1057, 1109. */
+		cpu_idle_selector("hlt");
+		idle_mwait = 0;
+	}
+
 	if (cpu_vendor_id == CPU_VENDOR_INTEL && cpu_id == 0x506c9) {
 		/*
 		 * Apollo Lake errata APL31 (public errata APL30).
@@ -884,7 +891,7 @@ hw_ssb_recalculate(bool all_cpus)
 		hw_ssb_set(true, all_cpus);
 		break;
 	case 2: /* auto */
-		hw_ssb_set((cpu_ia32_arch_caps & IA32_ARCH_CAP_SSBD_NO) != 0 ?
+		hw_ssb_set((cpu_ia32_arch_caps & IA32_ARCH_CAP_SSB_NO) != 0 ?
 		    false : true, all_cpus);
 		break;
 	}

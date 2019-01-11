@@ -83,11 +83,11 @@
 struct kevent {
 	__uintptr_t	ident;		/* identifier for this event */
 	short		filter;		/* filter for event */
-	unsigned short	flags;
-	unsigned int	fflags;
-	__int64_t	data;
+	unsigned short	flags;		/* action flags for kqueue */
+	unsigned int	fflags;		/* filter flag value */
+	__int64_t	data;		/* filter data value */
 	void		*udata;		/* opaque user data identifier */
-	__uint64_t	ext[4];
+	__uint64_t	ext[4];		/* extensions */
 };
 
 #if defined(_WANT_FREEBSD11_KEVENT)
@@ -294,7 +294,6 @@ struct knote {
 #define KN_DETACHED	0x08			/* knote is detached */
 #define KN_MARKER	0x20			/* ignore this knote */
 #define KN_KQUEUE	0x40			/* this knote belongs to a kq */
-#define KN_HASKQLOCK	0x80			/* for _inevent */
 #define	KN_SCAN		0x100			/* flux set in kqueue_scan() */
 	int			kn_influx;
 	int			kn_sfflags;	/* saved filter flags */
@@ -349,7 +348,7 @@ void	knlist_cleardel(struct knlist *knl, struct thread *td,
 	knlist_cleardel((knl), (td), (islocked), 1)
 void	knote_fdclose(struct thread *p, int fd);
 int 	kqfd_register(int fd, struct kevent *kev, struct thread *p,
-	    int waitok);
+	    int mflag);
 int	kqueue_add_filteropts(int filt, struct filterops *filtops);
 int	kqueue_del_filteropts(int filt);
 

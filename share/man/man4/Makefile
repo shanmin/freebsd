@@ -23,13 +23,10 @@ MAN=	aac.4 \
 	${_acpi_wmi.4} \
 	ada.4 \
 	adm6996fc.4 \
-	adv.4 \
-	adw.4 \
 	ae.4 \
 	${_aesni.4} \
 	age.4 \
 	agp.4 \
-	aha.4 \
 	ahc.4 \
 	ahci.4 \
 	ahd.4 \
@@ -135,7 +132,6 @@ MAN=	aac.4 \
 	disc.4 \
 	divert.4 \
 	${_dpms.4} \
-	dpt.4 \
 	ds1307.4 \
 	ds3231.4 \
 	${_dtrace_provs} \
@@ -196,12 +192,14 @@ MAN=	aac.4 \
 	${_hv_vmbus.4} \
 	${_hv_vss.4} \
 	hwpmc.4 \
+	iavf.4 \
 	ichsmb.4 \
 	${_ichwd.4} \
 	icmp.4 \
 	icmp6.4 \
 	ida.4 \
 	if_ipsec.4 \
+	iflib.4 \
 	ifmib.4 \
 	ig4.4 \
 	igmp.4 \
@@ -239,11 +237,8 @@ MAN=	aac.4 \
 	iwnfw.4 \
 	ixgbe.4 \
 	ixl.4 \
-	ixlv.4 \
 	jedec_dimm.4 \
-	jedec_ts.4 \
 	jme.4 \
-	joy.4 \
 	kbdmux.4 \
 	keyboard.4 \
 	kld.4 \
@@ -269,6 +264,7 @@ MAN=	aac.4 \
 	mac_lomac.4 \
 	mac_mls.4 \
 	mac_none.4 \
+	mac_ntpd.4 \
 	mac_partition.4 \
 	mac_portacl.4 \
 	mac_seeotheruids.4 \
@@ -309,8 +305,6 @@ MAN=	aac.4 \
 	my.4 \
 	nand.4 \
 	nandsim.4 \
-	ncr.4 \
-	ncv.4 \
 	${_ndis.4} \
 	net80211.4 \
 	netdump.4 \
@@ -329,6 +323,7 @@ MAN=	aac.4 \
 	ng_btsocket.4 \
 	ng_car.4 \
 	ng_ccatm.4 \
+	ng_checksum.4 \
 	ng_cisco.4 \
 	ng_deflate.4 \
 	ng_device.4 \
@@ -378,7 +373,6 @@ MAN=	aac.4 \
 	ng_vjc.4 \
 	ng_vlan.4 \
 	nmdm.4 \
-	nsp.4 \
 	${_ntb.4} \
 	${_ntb_hw_intel.4} \
 	${_ntb_hw_plx.4} \
@@ -511,7 +505,6 @@ MAN=	aac.4 \
 	sppp.4 \
 	ste.4 \
 	stf.4 \
-	stg.4 \
 	stge.4 \
 	sym.4 \
 	syncache.4 \
@@ -669,7 +662,7 @@ MLINKS+=ixgbe.4 ix.4
 MLINKS+=ixgbe.4 if_ix.4
 MLINKS+=ixgbe.4 if_ixgbe.4
 MLINKS+=ixl.4 if_ixl.4
-MLINKS+=ixlv.4 if_ixlv.4
+MLINKS+=iavf.4 if_iavf.4
 MLINKS+=jme.4 if_jme.4
 MLINKS+=kue.4 if_kue.4
 MLINKS+=lagg.4 trunk.4
@@ -868,9 +861,18 @@ _nvd.4= 	nvd.4
 _nvme.4=	nvme.4
 .endif
 
-.if exists(${.CURDIR}/man4.${MACHINE_CPUARCH})
-SUBDIR=	man4.${MACHINE_CPUARCH}
+.if empty(MAN_ARCH)
+__arches=	${MACHINE} ${MACHINE_ARCH} ${MACHINE_CPUARCH}
+.elif ${MAN_ARCH} == "all"
+__arches=	${:!/bin/sh -c "/bin/ls -d ${.CURDIR}/man4.*"!:E}
+.else
+__arches=	${MAN_ARCH}
 .endif
+.for __arch in ${__arches:O:u}
+.if exists(${.CURDIR}/man4.${__arch})
+SUBDIR+=	man4.${__arch}
+.endif
+.endfor
 
 .if ${MK_BLUETOOTH} != "no"
 MAN+=		ng_bluetooth.4
@@ -888,7 +890,14 @@ _dtrace_provs=	dtrace_io.4 \
 		dtrace_sched.4 \
 		dtrace_sctp.4 \
 		dtrace_tcp.4 \
-		dtrace_udp.4
+		dtrace_udp.4 \
+		dtrace_udplite.4
+.endif
+
+.if ${MK_EFI} != "no"
+MAN+=		efidev.4
+
+MLINKS+=	efidev.4 efirtc.4
 .endif
 
 .if ${MK_ISCSI} != "no"

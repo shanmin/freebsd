@@ -62,6 +62,7 @@ __FBSDID("$FreeBSD$");
 #include "common/t4_msg.h"
 #include "common/t4_regs.h"
 #include "common/t4_regs_values.h"
+#include "t4_clip.h"
 #include "tom/t4_tom_l2t.h"
 #include "tom/t4_tom.h"
 
@@ -98,7 +99,8 @@ do_act_establish(struct sge_iq *iq, const struct rss_header *rss,
 		goto done;
 	}
 
-	make_established(toep, cpl->snd_isn, cpl->rcv_isn, cpl->tcp_opt);
+	make_established(toep, be32toh(cpl->snd_isn) - 1,
+	    be32toh(cpl->rcv_isn) - 1, cpl->tcp_opt);
 
 	if (toep->ulp_mode == ULP_MODE_TLS)
 		tls_establish(toep);
@@ -316,7 +318,6 @@ t4_connect(struct toedev *tod, struct socket *so, struct rtentry *rt,
     struct sockaddr *nam)
 {
 	struct adapter *sc = tod->tod_softc;
-	struct tom_data *td = tod_td(tod);
 	struct toepcb *toep = NULL;
 	struct wrqe *wr = NULL;
 	struct ifnet *rt_ifp = rt->rt_ifp;
@@ -326,7 +327,7 @@ t4_connect(struct toedev *tod, struct socket *so, struct rtentry *rt,
 	struct tcpcb *tp = intotcpcb(inp);
 	int reason;
 	struct offload_settings settings;
-	uint16_t vid = 0xffff;
+	uint16_t vid = 0xfff, pcp = 0;
 
 	INP_WLOCK_ASSERT(inp);
 	KASSERT(nam->sa_family == AF_INET || nam->sa_family == AF_INET6,
@@ -335,17 +336,19 @@ t4_connect(struct toedev *tod, struct socket *so, struct rtentry *rt,
 	if (rt_ifp->if_type == IFT_ETHER)
 		vi = rt_ifp->if_softc;
 	else if (rt_ifp->if_type == IFT_L2VLAN) {
-		struct ifnet *ifp = VLAN_COOKIE(rt_ifp);
+		struct ifnet *ifp = VLAN_TRUNKDEV(rt_ifp);
 
 		vi = ifp->if_softc;
 		VLAN_TAG(rt_ifp, &vid);
+		VLAN_PCP(rt_ifp, &pcp);
 	} else if (rt_ifp->if_type == IFT_IEEE8023ADLAG)
 		DONT_OFFLOAD_ACTIVE_OPEN(ENOSYS); /* XXX: implement lagg+TOE */
 	else
 		DONT_OFFLOAD_ACTIVE_OPEN(ENOTSUP);
 
 	rw_rlock(&sc->policy_lock);
-	settings = *lookup_offload_policy(sc, OPEN_TYPE_ACTIVE, NULL, vid, inp);
+	settings = *lookup_offload_policy(sc, OPEN_TYPE_ACTIVE, NULL,
+	    EVL_MAKETAG(vid, pcp, 0), inp);
 	rw_runlock(&sc->policy_lock);
 	if (!settings.offload)
 		DONT_OFFLOAD_ACTIVE_OPEN(EPERM);
@@ -407,7 +410,7 @@ t4_connect(struct toedev *tod, struct socket *so, struct rtentry *rt,
 		if ((inp->inp_vflag & INP_IPV6) == 0)
 			DONT_OFFLOAD_ACTIVE_OPEN(ENOTSUP);
 
-		toep->ce = hold_lip(td, &inp->in6p_laddr, NULL);
+		toep->ce = t4_hold_lip(sc, &inp->in6p_laddr, NULL);
 		if (toep->ce == NULL)
 			DONT_OFFLOAD_ACTIVE_OPEN(ENOENT);
 
@@ -494,7 +497,7 @@ failed:
 		if (toep->l2te)
 			t4_l2t_release(toep->l2te);
 		if (toep->ce)
-			release_lip(td, toep->ce);
+			t4_release_lip(sc, toep->ce);
 		free_toepcb(toep);
 	}
 

@@ -749,12 +749,13 @@ in6m_lookup_locked(struct ifnet *ifp, const struct in6_addr *mcaddr)
 static __inline struct in6_multi *
 in6m_lookup(struct ifnet *ifp, const struct in6_addr *mcaddr)
 {
+	struct epoch_tracker et;
 	struct in6_multi *inm;
 
 	IN6_MULTI_LIST_LOCK();
-	IF_ADDR_RLOCK(ifp);
+	NET_EPOCH_ENTER(et);
 	inm = in6m_lookup_locked(ifp, mcaddr);
-	IF_ADDR_RUNLOCK(ifp);
+	NET_EPOCH_EXIT(et);
 	IN6_MULTI_LIST_UNLOCK();
 
 	return (inm);
@@ -784,7 +785,7 @@ in6m_rele_locked(struct in6_multi_head *inmh, struct in6_multi *inm)
 	IN6_MULTI_LIST_LOCK_ASSERT();
 
 	if (--inm->in6m_refcount == 0) {
-		in6m_disconnect(inm);
+		MPASS(inm->in6m_ifp == NULL);
 		inm->in6m_ifma->ifma_protospec = NULL;
 		MPASS(inm->in6m_ifma->ifma_llifma == NULL);
 		SLIST_INSERT_HEAD(inmh, inm, in6m_nrele);

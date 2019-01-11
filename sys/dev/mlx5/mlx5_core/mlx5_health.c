@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2013-2015, Mellanox Technologies, Ltd.  All rights reserved.
+ * Copyright (c) 2013-2017, Mellanox Technologies, Ltd.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -59,19 +59,24 @@ enum  {
 	MLX5_SENSOR_FW_SYND_RFR		= 5,
 };
 
-static int lock_sem_sw_reset(struct mlx5_core_dev *dev, int state)
+static int mlx5_fw_reset_enable = 1;
+SYSCTL_INT(_hw_mlx5, OID_AUTO, fw_reset_enable, CTLFLAG_RWTUN,
+    &mlx5_fw_reset_enable, 0,
+    "Enable firmware reset");
+
+static int lock_sem_sw_reset(struct mlx5_core_dev *dev)
 {
-	int ret, err;
+	int ret;
 
 	/* Lock GW access */
-	ret = mlx5_pciconf_cap9_sem(dev, LOCK);
+	ret = -mlx5_vsc_lock(dev);
 	if (ret) {
-		mlx5_core_warn(dev, "Timed out locking gateway %d, %d\n", state, ret);
+		mlx5_core_warn(dev, "Timed out locking gateway %d\n", ret);
 		return ret;
 	}
 
-	ret = mlx5_pciconf_set_sem_addr_space(dev, MLX5_SEMAPHORE_SW_RESET, state);
-	if (ret && state == LOCK) {
+	ret = -mlx5_vsc_lock_addr_space(dev, MLX5_SEMAPHORE_SW_RESET);
+	if (ret) {
 		if (ret == -EBUSY)
 			mlx5_core_dbg(dev, "SW reset FW semaphore already locked, another function will handle the reset\n");
 		else
@@ -79,9 +84,26 @@ static int lock_sem_sw_reset(struct mlx5_core_dev *dev, int state)
 	}
 
 	/* Unlock GW access */
-	err = mlx5_pciconf_cap9_sem(dev, UNLOCK);
-	if (err)
-		mlx5_core_warn(dev, "Timed out unlocking gateway: state %d, err %d\n", state, err);
+	mlx5_vsc_unlock(dev);
+
+	return ret;
+}
+
+static int unlock_sem_sw_reset(struct mlx5_core_dev *dev)
+{
+	int ret;
+
+	/* Lock GW access */
+	ret = -mlx5_vsc_lock(dev);
+	if (ret) {
+		mlx5_core_warn(dev, "Timed out locking gateway %d\n", ret);
+		return ret;
+	}
+
+	ret = -mlx5_vsc_unlock_addr_space(dev, MLX5_SEMAPHORE_SW_RESET);
+
+	/* Unlock GW access */
+	mlx5_vsc_unlock(dev);
 
 	return ret;
 }
@@ -119,7 +141,7 @@ static void mlx5_trigger_cmd_completions(struct mlx5_core_dev *dev)
 	spin_unlock_irqrestore(&dev->cmd.alloc_lock, flags);
 
 	mlx5_core_dbg(dev, "vector 0x%jx\n", (uintmax_t)vector);
-	mlx5_cmd_comp_handler(dev, vector);
+	mlx5_cmd_comp_handler(dev, vector, MLX5_CMD_MODE_EVENTS);
 	return;
 
 no_trig:
@@ -163,10 +185,13 @@ static u32 check_fatal_sensors(struct mlx5_core_dev *dev)
 
 static void reset_fw_if_needed(struct mlx5_core_dev *dev)
 {
-	bool supported = (ioread32be(&dev->iseg->initializing) >>
-			  MLX5_FW_RESET_SUPPORTED_OFFSET) & 1;
+	bool supported;
 	u32 cmdq_addr, fatal_error;
 
+	if (!mlx5_fw_reset_enable)
+		return;
+	supported = (ioread32be(&dev->iseg->initializing) >>
+	    MLX5_FW_RESET_SUPPORTED_OFFSET) & 1;
 	if (!supported)
 		return;
 
@@ -202,20 +227,18 @@ void mlx5_enter_error_state(struct mlx5_core_dev *dev, bool force)
 	u32 fatal_error;
 	int lock = -EBUSY;
 
-	mutex_lock(&dev->intf_state_mutex);
-	if (dev->state == MLX5_DEVICE_STATE_INTERNAL_ERROR) {
-		goto unlock;
-		return;
-	}
-
 	fatal_error = check_fatal_sensors(dev);
 
 	if (fatal_error || force) {
+		if (xchg(&dev->state, MLX5_DEVICE_STATE_INTERNAL_ERROR) ==
+		    MLX5_DEVICE_STATE_INTERNAL_ERROR)
+			return;
 		if (!force)
 			mlx5_core_err(dev, "internal state error detected\n");
-		dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
 		mlx5_trigger_cmd_completions(dev);
 	}
+
+	mutex_lock(&dev->intf_state_mutex);
 
 	if (force)
 		goto err_state_done;
@@ -223,7 +246,7 @@ void mlx5_enter_error_state(struct mlx5_core_dev *dev, bool force)
 	if (fatal_error == MLX5_SENSOR_FW_SYND_RFR) {
 		/* Get cr-dump and reset FW semaphore */
 		if (mlx5_core_is_pf(dev))
-			lock = lock_sem_sw_reset(dev, LOCK);
+			lock = lock_sem_sw_reset(dev);
 
 		/* Execute cr-dump and SW reset */
 		if (lock != -EBUSY) {
@@ -249,13 +272,12 @@ void mlx5_enter_error_state(struct mlx5_core_dev *dev, bool force)
 
 	/* Release FW semaphore if you are the lock owner */
 	if (!lock)
-		lock_sem_sw_reset(dev, UNLOCK);
+		unlock_sem_sw_reset(dev);
 
 	mlx5_core_err(dev, "system error event triggered\n");
 
 err_state_done:
-	mlx5_core_event(dev, MLX5_DEV_EVENT_SYS_ERROR, 0);
-unlock:
+	mlx5_core_event(dev, MLX5_DEV_EVENT_SYS_ERROR, 1);
 	mutex_unlock(&dev->intf_state_mutex);
 }
 
@@ -502,9 +524,17 @@ void mlx5_start_health_poll(struct mlx5_core_dev *dev)
 		  round_jiffies(jiffies + MLX5_HEALTH_POLL_INTERVAL));
 }
 
-void mlx5_stop_health_poll(struct mlx5_core_dev *dev)
+void mlx5_stop_health_poll(struct mlx5_core_dev *dev, bool disable_health)
 {
 	struct mlx5_core_health *health = &dev->priv.health;
+	unsigned long flags;
+
+	if (disable_health) {
+		spin_lock_irqsave(&health->wq_lock, flags);
+		set_bit(MLX5_DROP_NEW_HEALTH_WORK, &health->flags);
+		set_bit(MLX5_DROP_NEW_RECOVERY_WORK, &health->flags);
+		spin_unlock_irqrestore(&health->wq_lock, flags);
+	}
 
 	del_timer_sync(&health->timer);
 }

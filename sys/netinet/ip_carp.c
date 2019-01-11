@@ -187,31 +187,31 @@ static int proto_reg[] = {-1, -1};
  */
 
 /* Accept incoming CARP packets. */
-static VNET_DEFINE(int, carp_allow) = 1;
+VNET_DEFINE_STATIC(int, carp_allow) = 1;
 #define	V_carp_allow	VNET(carp_allow)
 
 /* Set DSCP in outgoing CARP packets. */
-static VNET_DEFINE(int, carp_dscp) = 56;
+VNET_DEFINE_STATIC(int, carp_dscp) = 56;
 #define	V_carp_dscp	VNET(carp_dscp)
 
 /* Preempt slower nodes. */
-static VNET_DEFINE(int, carp_preempt) = 0;
+VNET_DEFINE_STATIC(int, carp_preempt) = 0;
 #define	V_carp_preempt	VNET(carp_preempt)
 
 /* Log level. */
-static VNET_DEFINE(int, carp_log) = 1;
+VNET_DEFINE_STATIC(int, carp_log) = 1;
 #define	V_carp_log	VNET(carp_log)
 
 /* Global advskew demotion. */
-static VNET_DEFINE(int, carp_demotion) = 0;
+VNET_DEFINE_STATIC(int, carp_demotion) = 0;
 #define	V_carp_demotion	VNET(carp_demotion)
 
 /* Send error demotion factor. */
-static VNET_DEFINE(int, carp_senderr_adj) = CARP_MAXSKEW;
+VNET_DEFINE_STATIC(int, carp_senderr_adj) = CARP_MAXSKEW;
 #define	V_carp_senderr_adj	VNET(carp_senderr_adj)
 
 /* Iface down demotion factor. */
-static VNET_DEFINE(int, carp_ifdown_adj) = CARP_MAXSKEW;
+VNET_DEFINE_STATIC(int, carp_ifdown_adj) = CARP_MAXSKEW;
 #define	V_carp_ifdown_adj	VNET(carp_ifdown_adj)
 
 static int carp_allow_sysctl(SYSCTL_HANDLER_ARGS);
@@ -644,6 +644,7 @@ carp_input_c(struct mbuf *m, struct carp_header *ch, sa_family_t af)
 	struct carp_softc *sc;
 	uint64_t tmp_counter;
 	struct timeval sc_tv, ch_tv;
+	struct epoch_tracker et;
 	int error;
 
 	/*
@@ -657,7 +658,7 @@ carp_input_c(struct mbuf *m, struct carp_header *ch, sa_family_t af)
 	 * (these should never happen, and as noted above, we may
 	 * miss real loops; this is just a double-check).
 	 */
-	IF_ADDR_RLOCK(ifp);
+	NET_EPOCH_ENTER(et);
 	error = 0;
 	match = NULL;
 	IFNET_FOREACH_IFA(ifp, ifa) {
@@ -671,7 +672,7 @@ carp_input_c(struct mbuf *m, struct carp_header *ch, sa_family_t af)
 	ifa = error ? NULL : match;
 	if (ifa != NULL)
 		ifa_ref(ifa);
-	IF_ADDR_RUNLOCK(ifp);
+	NET_EPOCH_EXIT(et);
 
 	if (ifa == NULL) {
 		if (error == ELOOP) {
@@ -879,18 +880,19 @@ carp_send_ad_error(struct carp_softc *sc, int error)
 static struct ifaddr *
 carp_best_ifa(int af, struct ifnet *ifp)
 {
+	struct epoch_tracker et;
 	struct ifaddr *ifa, *best;
 
 	if (af >= AF_MAX)
 		return (NULL);
 	best = NULL;
-	IF_ADDR_RLOCK(ifp);
+	NET_EPOCH_ENTER(et);
 	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 		if (ifa->ifa_addr->sa_family == af &&
 		    (best == NULL || ifa_preferred(best, ifa)))
 			best = ifa;
 	}
-	IF_ADDR_RUNLOCK(ifp);
+	NET_EPOCH_EXIT(et);
 	if (best != NULL)
 		ifa_ref(best);
 	return (best);
@@ -1167,10 +1169,11 @@ carp_send_na(struct carp_softc *sc)
 struct ifaddr *
 carp_iamatch6(struct ifnet *ifp, struct in6_addr *taddr)
 {
+	struct epoch_tracker et;
 	struct ifaddr *ifa;
 
 	ifa = NULL;
-	IF_ADDR_RLOCK(ifp);
+	NET_EPOCH_ENTER(et);
 	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 		if (ifa->ifa_addr->sa_family != AF_INET6)
 			continue;
@@ -1182,7 +1185,7 @@ carp_iamatch6(struct ifnet *ifp, struct in6_addr *taddr)
 			ifa_ref(ifa);
 		break;
 	}
-	IF_ADDR_RUNLOCK(ifp);
+	NET_EPOCH_EXIT(et);
 
 	return (ifa);
 }
@@ -1190,16 +1193,17 @@ carp_iamatch6(struct ifnet *ifp, struct in6_addr *taddr)
 caddr_t
 carp_macmatch6(struct ifnet *ifp, struct mbuf *m, const struct in6_addr *taddr)
 {
+	struct epoch_tracker et;
 	struct ifaddr *ifa;
 
-	IF_ADDR_RLOCK(ifp);
+	NET_EPOCH_ENTER(et);
 	IFNET_FOREACH_IFA(ifp, ifa)
 		if (ifa->ifa_addr->sa_family == AF_INET6 &&
 		    IN6_ARE_ADDR_EQUAL(taddr, IFA_IN6(ifa))) {
 			struct carp_softc *sc = ifa->ifa_carp;
 			struct m_tag *mtag;
 
-			IF_ADDR_RUNLOCK(ifp);
+			NET_EPOCH_EXIT(et);
 
 			mtag = m_tag_get(PACKET_TAG_CARP,
 			    sizeof(struct carp_softc *), M_NOWAIT);
@@ -1212,7 +1216,7 @@ carp_macmatch6(struct ifnet *ifp, struct mbuf *m, const struct in6_addr *taddr)
 
 			return (LLADDR(&sc->sc_addr));
 		}
-	IF_ADDR_RUNLOCK(ifp);
+	NET_EPOCH_EXIT(et);
 
 	return (NULL);
 }
@@ -1423,6 +1427,7 @@ carp_multicast_setup(struct carp_if *cif, sa_family_t sa)
 			free(im6o->im6o_membership, M_CARP);
 			break;
 		}
+		in6m_acquire(in6m);
 		im6o->im6o_membership[0] = in6m;
 		im6o->im6o_num_memberships++;
 
@@ -1444,6 +1449,7 @@ carp_multicast_setup(struct carp_if *cif, sa_family_t sa)
 			free(im6o->im6o_membership, M_CARP);
 			break;
 		}
+		in6m_acquire(in6m);
 		im6o->im6o_membership[1] = in6m;
 		im6o->im6o_num_memberships++;
 		break;
@@ -2172,6 +2178,21 @@ static struct protosw in6_carp_protosw = {
 	.pr_ctloutput =		rip6_ctloutput,
 	.pr_usrreqs =		&rip6_usrreqs
 };
+#endif
+
+#ifdef VIMAGE
+#if defined(__i386__)
+/*
+ * XXX This is a hack to work around an absolute relocation outside
+ * set_vnet by one (on the stop symbol) for carpstats.  Add a dummy variable
+ * to the end of the file in the hope that the linker will just keep the
+ * order (as it seems to do at the moment).  It is understood to be fragile.
+ * See PR 230857 for a longer discussion of the problem and the referenced
+ * review for possible alternate solutions.  Each is a hack; we just need
+ * the least intrusive one for the next release.
+ */
+VNET_DEFINE(char, carp_zzz) = 0xde;
+#endif
 #endif
 
 static void

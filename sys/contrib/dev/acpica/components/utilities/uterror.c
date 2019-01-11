@@ -8,7 +8,7 @@
  *
  * 1. Copyright Notice
  *
- * Some or all of this work - Copyright (c) 1999 - 2018, Intel Corp.
+ * Some or all of this work - Copyright (c) 1999 - 2019, Intel Corp.
  * All rights reserved.
  *
  * 2. License
@@ -352,19 +352,19 @@ AcpiUtPrefixedNamespaceError (
     {
     case AE_ALREADY_EXISTS:
 
-        AcpiOsPrintf ("\n" ACPI_MSG_BIOS_ERROR);
+        AcpiOsPrintf (ACPI_MSG_BIOS_ERROR);
         Message = "Failure creating";
         break;
 
     case AE_NOT_FOUND:
 
-        AcpiOsPrintf ("\n" ACPI_MSG_BIOS_ERROR);
+        AcpiOsPrintf (ACPI_MSG_BIOS_ERROR);
         Message = "Could not resolve";
         break;
 
     default:
 
-        AcpiOsPrintf ("\n" ACPI_MSG_ERROR);
+        AcpiOsPrintf (ACPI_MSG_ERROR);
         Message = "Failure resolving";
         break;
     }

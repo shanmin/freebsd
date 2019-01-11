@@ -87,6 +87,7 @@ static int zpool_do_detach(int, char **);
 static int zpool_do_replace(int, char **);
 static int zpool_do_split(int, char **);
 
+static int zpool_do_initialize(int, char **);
 static int zpool_do_scrub(int, char **);
 
 static int zpool_do_import(int, char **);
@@ -136,6 +137,7 @@ typedef enum {
 	HELP_ONLINE,
 	HELP_REPLACE,
 	HELP_REMOVE,
+	HELP_INITIALIZE,
 	HELP_SCRUB,
 	HELP_STATUS,
 	HELP_UPGRADE,
@@ -187,6 +189,7 @@ static zpool_command_t command_table[] = {
 	{ "replace",	zpool_do_replace,	HELP_REPLACE		},
 	{ "split",	zpool_do_split,		HELP_SPLIT		},
 	{ NULL },
+	{ "initialize",	zpool_do_initialize,	HELP_INITIALIZE		},
 	{ "scrub",	zpool_do_scrub,		HELP_SCRUB		},
 	{ NULL },
 	{ "import",	zpool_do_import,	HELP_IMPORT		},
@@ -261,6 +264,8 @@ get_usage(zpool_help_t idx)
 		return (gettext("\tremove [-nps] <pool> <device> ...\n"));
 	case HELP_REOPEN:
 		return (gettext("\treopen <pool>\n"));
+	case HELP_INITIALIZE:
+		return (gettext("\tinitialize [-cs] <pool> [<device> ...]\n"));
 	case HELP_SCRUB:
 		return (gettext("\tscrub [-s | -p] <pool> ...\n"));
 	case HELP_STATUS:
@@ -1268,7 +1273,7 @@ badusage:
 /*
  * zpool destroy <pool>
  *
- * 	-f	Forcefully unmount any datasets
+ *	-f	Forcefully unmount any datasets
  *
  * Destroy the given pool.  Automatically unmounts any datasets in the pool.
  */
@@ -1648,6 +1653,43 @@ print_status_config(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 		(void) printf(gettext("  (%s)"),
 		    (ps->pss_func == POOL_SCAN_RESILVER) ?
 		    "resilvering" : "repairing");
+	}
+
+	if ((vs->vs_initialize_state == VDEV_INITIALIZE_ACTIVE ||
+	    vs->vs_initialize_state == VDEV_INITIALIZE_SUSPENDED ||
+	    vs->vs_initialize_state == VDEV_INITIALIZE_COMPLETE) &&
+	    !vs->vs_scan_removing) {
+		char zbuf[1024];
+		char tbuf[256];
+		struct tm zaction_ts;
+
+		time_t t = vs->vs_initialize_action_time;
+		int initialize_pct = 100;
+		if (vs->vs_initialize_state != VDEV_INITIALIZE_COMPLETE) {
+			initialize_pct = (vs->vs_initialize_bytes_done * 100 /
+			    (vs->vs_initialize_bytes_est + 1));
+		}
+
+		(void) localtime_r(&t, &zaction_ts);
+		(void) strftime(tbuf, sizeof (tbuf), "%c", &zaction_ts);
+
+		switch (vs->vs_initialize_state) {
+		case VDEV_INITIALIZE_SUSPENDED:
+			(void) snprintf(zbuf, sizeof (zbuf),
+			    ", suspended, started at %s", tbuf);
+			break;
+		case VDEV_INITIALIZE_ACTIVE:
+			(void) snprintf(zbuf, sizeof (zbuf),
+			    ", started at %s", tbuf);
+			break;
+		case VDEV_INITIALIZE_COMPLETE:
+			(void) snprintf(zbuf, sizeof (zbuf),
+			    ", completed at %s", tbuf);
+			break;
+		}
+
+		(void) printf(gettext("  (%d%% initialized%s)"),
+		    initialize_pct, zbuf);
 	}
 
 	(void) printf("\n");
@@ -2123,8 +2165,8 @@ do_import(nvlist_t *config, const char *newname, const char *mntopts,
  * zpool checkpoint <pool>
  *       checkpoint --discard <pool>
  *
- *       -d         Discard the checkpoint from a checkpointed
- *       --discard  pool.
+ *	-d	Discard the checkpoint from a checkpointed
+ *	--discard  pool.
  *
  * Checkpoints the specified pool, by taking a "snapshot" of its
  * current state. A pool can only have one checkpoint at a time.
@@ -2200,45 +2242,45 @@ zpool_do_checkpoint(int argc, char **argv)
  *              [-d dir | -c cachefile] [-f] [-n] [-F] [-t]
  *              <pool | id> [newpool]
  *
- *	 -c	Read pool information from a cachefile instead of searching
+ *	-c	Read pool information from a cachefile instead of searching
  *		devices.
  *
- *       -d	Scan in a specific directory, other than /dev/dsk.  More than
+ *	-d	Scan in a specific directory, other than /dev/dsk.  More than
  *		one directory can be specified using multiple '-d' options.
  *
- *       -D     Scan for previously destroyed pools or import all or only
- *              specified destroyed pools.
+ *	-D	Scan for previously destroyed pools or import all or only
+ *		specified destroyed pools.
  *
- *       -R	Temporarily import the pool, with all mountpoints relative to
+ *	-R	Temporarily import the pool, with all mountpoints relative to
  *		the given root.  The pool will remain exported when the machine
  *		is rebooted.
  *
- *       -V	Import even in the presence of faulted vdevs.  This is an
- *       	intentionally undocumented option for testing purposes, and
- *       	treats the pool configuration as complete, leaving any bad
+ *	-V	Import even in the presence of faulted vdevs.  This is an
+ *		intentionally undocumented option for testing purposes, and
+ *		treats the pool configuration as complete, leaving any bad
  *		vdevs in the FAULTED state. In other words, it does verbatim
  *		import.
  *
- *       -f	Force import, even if it appears that the pool is active.
+ *	-f	Force import, even if it appears that the pool is active.
  *
- *       -F     Attempt rewind if necessary.
+ *	-F	Attempt rewind if necessary.
  *
- *       -n     See if rewind would work, but don't actually rewind.
+ *	-n	See if rewind would work, but don't actually rewind.
  *
- *       -N     Import the pool but don't mount datasets.
+ *	-N	Import the pool but don't mount datasets.
  *
- *       -t     Use newpool as a temporary pool name instead of renaming
- *       	the pool.
+ *	-t	Use newpool as a temporary pool name instead of renaming
+ *		the pool.
  *
- *       -T     Specify a starting txg to use for import. This option is
- *       	intentionally undocumented option for testing purposes.
+ *	-T	Specify a starting txg to use for import. This option is
+ *		intentionally undocumented option for testing purposes.
  *
- *       -a	Import all pools found.
+ *	-a	Import all pools found.
  *
- *       -o	Set property=value and/or temporary mount options (without '=').
+ *	-o	Set property=value and/or temporary mount options (without '=').
  *
- *       --rewind-to-checkpoint
- *       	Import the pool and revert back to the checkpoint.
+ *	--rewind-to-checkpoint
+ *		Import the pool and revert back to the checkpoint.
  *
  * The import command scans for pools to import, and import pools based on pool
  * name and GUID.  The pool can also be renamed as part of the import process.
@@ -3398,7 +3440,7 @@ list_callback(zpool_handle_t *zhp, void *data)
  *	-o	List of properties to display.  Defaults to
  *		"name,size,allocated,free,expandsize,fragmentation,capacity,"
  *		"dedupratio,health,altroot"
- * 	-p	Diplay values in parsable (exact) format.
+ *	-p	Diplay values in parsable (exact) format.
  *	-T	Display a timestamp in date(1) or Unix format
  *
  * List all pools in the system, whether or not they're healthy.  Output space
@@ -4236,6 +4278,119 @@ zpool_do_scrub(int argc, char **argv)
 	}
 
 	return (for_each_pool(argc, argv, B_TRUE, NULL, scrub_callback, &cb));
+}
+
+static void
+zpool_collect_leaves(zpool_handle_t *zhp, nvlist_t *nvroot, nvlist_t *res)
+{
+	uint_t children = 0;
+	nvlist_t **child;
+	uint_t i;
+
+	(void) nvlist_lookup_nvlist_array(nvroot, ZPOOL_CONFIG_CHILDREN,
+	    &child, &children);
+
+	if (children == 0) {
+		char *path = zpool_vdev_name(g_zfs, zhp, nvroot, B_FALSE);
+		fnvlist_add_boolean(res, path);
+		free(path);
+		return;
+	}
+
+	for (i = 0; i < children; i++) {
+		zpool_collect_leaves(zhp, child[i], res);
+	}
+}
+
+/*
+ * zpool initialize [-cs] <pool> [<vdev> ...]
+ * Initialize all unused blocks in the specified vdevs, or all vdevs in the pool
+ * if none specified.
+ *
+ *	-c	Cancel. Ends active initializing.
+ *	-s	Suspend. Initializing can then be restarted with no flags.
+ */
+int
+zpool_do_initialize(int argc, char **argv)
+{
+	int c;
+	char *poolname;
+	zpool_handle_t *zhp;
+	nvlist_t *vdevs;
+	int err = 0;
+
+	struct option long_options[] = {
+		{"cancel",	no_argument,		NULL, 'c'},
+		{"suspend",	no_argument,		NULL, 's'},
+		{0, 0, 0, 0}
+	};
+
+	pool_initialize_func_t cmd_type = POOL_INITIALIZE_DO;
+	while ((c = getopt_long(argc, argv, "cs", long_options, NULL)) != -1) {
+		switch (c) {
+		case 'c':
+			if (cmd_type != POOL_INITIALIZE_DO) {
+				(void) fprintf(stderr, gettext("-c cannot be "
+				    "combined with other options\n"));
+				usage(B_FALSE);
+			}
+			cmd_type = POOL_INITIALIZE_CANCEL;
+			break;
+		case 's':
+			if (cmd_type != POOL_INITIALIZE_DO) {
+				(void) fprintf(stderr, gettext("-s cannot be "
+				    "combined with other options\n"));
+				usage(B_FALSE);
+			}
+			cmd_type = POOL_INITIALIZE_SUSPEND;
+			break;
+		case '?':
+			if (optopt != 0) {
+				(void) fprintf(stderr,
+				    gettext("invalid option '%c'\n"), optopt);
+			} else {
+				(void) fprintf(stderr,
+				    gettext("invalid option '%s'\n"),
+				    argv[optind - 1]);
+			}
+			usage(B_FALSE);
+		}
+	}
+
+	argc -= optind;
+	argv += optind;
+
+	if (argc < 1) {
+		(void) fprintf(stderr, gettext("missing pool name argument\n"));
+		usage(B_FALSE);
+		return (-1);
+	}
+
+	poolname = argv[0];
+	zhp = zpool_open(g_zfs, poolname);
+	if (zhp == NULL)
+		return (-1);
+
+	vdevs = fnvlist_alloc();
+	if (argc == 1) {
+		/* no individual leaf vdevs specified, so add them all */
+		nvlist_t *config = zpool_get_config(zhp, NULL);
+		nvlist_t *nvroot = fnvlist_lookup_nvlist(config,
+		    ZPOOL_CONFIG_VDEV_TREE);
+		zpool_collect_leaves(zhp, nvroot, vdevs);
+	} else {
+		int i;
+		for (i = 1; i < argc; i++) {
+			fnvlist_add_boolean(vdevs, argv[i]);
+		}
+	}
+
+	err = zpool_initialize(zhp, cmd_type, vdevs);
+
+	fnvlist_free(vdevs);
+	zpool_close(zhp);
+
+	return (err);
 }
 
 typedef struct status_cbdata {
@@ -5928,7 +6083,7 @@ get_callback(zpool_handle_t *zhp, void *data)
  *		by a single tab.
  *	-o	List of columns to display.  Defaults to
  *		"name,property,value,source".
- * 	-p	Diplay values in parsable (exact) format.
+ *	-p	Diplay values in parsable (exact) format.
  *
  * Get properties of pools in the system. Output space statistics
  * for each one as well as other attributes.

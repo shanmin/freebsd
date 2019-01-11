@@ -57,6 +57,7 @@ __FBSDID("$FreeBSD$");
  * to produce the hexadecimal values shown.
  */
 
+#include <float.h>
 #include "math.h"
 #include "math_private.h"
 
@@ -118,7 +119,7 @@ __ieee754_pow(double x, double y)
     /* y!=zero: result is NaN if either arg is NaN */
 	if(ix > 0x7ff00000 || ((ix==0x7ff00000)&&(lx!=0)) ||
 	   iy > 0x7ff00000 || ((iy==0x7ff00000)&&(ly!=0)))
-		return (x+0.0)+(y+0.0);
+	    return nan_mix(x, y);
 
     /* determine if y is an odd int when x < 0
      * yisint = 0	... y is not an integer
@@ -132,7 +133,7 @@ __ieee754_pow(double x, double y)
 		k = (iy>>20)-0x3ff;	   /* exponent */
 		if(k>20) {
 		    j = ly>>(52-k);
-		    if((j<<(52-k))==ly) yisint = 2-(j&1);
+		    if(((u_int32_t)j<<(52-k))==ly) yisint = 2-(j&1);
 		} else if(ly==0) {
 		    j = iy>>(20-k);
 		    if((j<<(20-k))==iy) yisint = 2-(j&1);
@@ -307,3 +308,7 @@ __ieee754_pow(double x, double y)
 	else SET_HIGH_WORD(z,j);
 	return s*z;
 }
+
+#if (LDBL_MANT_DIG == 53)
+__weak_reference(pow, powl);
+#endif

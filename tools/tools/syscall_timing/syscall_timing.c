@@ -59,16 +59,6 @@ static struct timespec ts_start, ts_end;
 static int alarm_timeout;
 static volatile int alarm_fired;
 
-#define timespecsub(vvp, uvp)						\
-	do {								\
-		(vvp)->tv_sec -= (uvp)->tv_sec;				\
-		(vvp)->tv_nsec -= (uvp)->tv_nsec;			\
-		if ((vvp)->tv_nsec < 0) {				\
-			(vvp)->tv_sec--;				\
-			(vvp)->tv_nsec += 1000000000;			\
-		}							\
-	} while (0)
-
 #define	BENCHMARK_FOREACH(I, NUM) for (I = 0; I < NUM && alarm_fired == 0; I++)
 
 static void
@@ -339,6 +329,23 @@ test_getuid(uintmax_t num, uintmax_t int_arg __unused, const char *path __unused
 	benchmark_start();
 	BENCHMARK_FOREACH(i, num) {
 		getuid();
+	}
+	benchmark_stop();
+	return (i);
+}
+
+static uintmax_t
+test_lstat(uintmax_t num, uintmax_t int_arg __unused, const char *path)
+{
+	struct stat sb;
+	uintmax_t i;
+	int error;
+
+	benchmark_start();
+	BENCHMARK_FOREACH(i, num) {
+		error = lstat(path, &sb);
+		if (error != 0)
+			err(-1, "lstat");
 	}
 	benchmark_stop();
 	return (i);
@@ -834,6 +841,23 @@ test_socketpair_dgram(uintmax_t num, uintmax_t int_arg __unused, const char *pat
 }
 
 static uintmax_t
+test_readlink(uintmax_t num, uintmax_t int_arg __unused, const char *path)
+{
+	char buf[PATH_MAX];
+	ssize_t rv;
+	uintmax_t i;
+
+	benchmark_start();
+	BENCHMARK_FOREACH(i, num) {
+		rv = readlink(path, buf, sizeof(buf));
+		if (rv < 0 && errno != EINVAL)
+			err(-1, "readlink");
+	}
+	benchmark_stop();
+	return (i);
+}
+
+static uintmax_t
 test_vfork(uintmax_t num, uintmax_t int_arg __unused, const char *path __unused)
 {
 	pid_t pid;
@@ -914,6 +938,7 @@ static const struct test tests[] = {
 	{ "getresuid", test_getresuid, .t_flags = 0 },
 	{ "gettimeofday", test_gettimeofday, .t_flags = 0 },
 	{ "getuid", test_getuid, .t_flags = 0 },
+	{ "lstat", test_lstat, .t_flags = FLAG_PATH },
 	{ "memcpy_1", test_memcpy, .t_flags = 0, .t_int = 1 },
 	{ "memcpy_10", test_memcpy, .t_flags = 0, .t_int = 10 },
 	{ "memcpy_100", test_memcpy, .t_flags = 0, .t_int = 100 },
@@ -972,6 +997,7 @@ static const struct test tests[] = {
 	{ "socketpair_dgram", test_socketpair_dgram, .t_flags = 0 },
 	{ "socket_tcp", test_socket_stream, .t_int = PF_INET },
 	{ "socket_udp", test_socket_dgram, .t_int = PF_INET },
+	{ "readlink", test_readlink, .t_flags = FLAG_PATH },
 	{ "vfork", test_vfork, .t_flags = 0 },
 	{ "vfork_exec", test_vfork_exec, .t_flags = 0 },
 };
@@ -1112,7 +1138,7 @@ main(int argc, char *argv[])
 		for (k = 0; k < loops; k++) {
 			calls = the_test->t_func(iterations, the_test->t_int,
 			    path);
-			timespecsub(&ts_end, &ts_start);
+			timespecsub(&ts_end, &ts_start, &ts_end);
 			printf("%s\t%ju\t", the_test->t_name, k);
 			printf("%ju.%09ju\t%ju\t", (uintmax_t)ts_end.tv_sec,
 			    (uintmax_t)ts_end.tv_nsec, calls);
