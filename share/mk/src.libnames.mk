@@ -18,6 +18,10 @@ _PRIVATELIBS=	\
 		bsdstat \
 		devdctl \
 		event \
+		gmock \
+		gtest \
+		gmock_main \
+		gtest_main \
 		heimipcc \
 		heimipcs \
 		ldns \
@@ -78,7 +82,6 @@ _LIBRARIES=	\
 		cap_fileargs \
 		cap_grp \
 		cap_pwd \
-		cap_random \
 		cap_sysctl \
 		cap_syslog \
 		com_err \
@@ -131,7 +134,6 @@ _LIBRARIES=	\
 		memstat \
 		mp \
 		mt \
-		nandfs \
 		ncurses \
 		ncursesw \
 		netgraph \
@@ -228,7 +230,7 @@ LIBVERIEXEC?=	${LIBVERIEXECDIR}/libveriexec${PIE_SUFFIX}.a
 # Each library's LIBADD needs to be duplicated here for static linkage of
 # 2nd+ order consumers.  Auto-generating this would be better.
 _DP_80211=	sbuf bsdxml
-_DP_archive=	z bz2 lzma bsdxml
+_DP_archive=	z bz2 lzma bsdxml zstd
 _DP_zstd=	pthread
 .if ${MK_BLACKLIST} != "no"
 _DP_blacklist+=	pthread
@@ -257,7 +259,6 @@ _DP_cap_dns=	nv
 _DP_cap_fileargs=	nv
 _DP_cap_grp=	nv
 _DP_cap_pwd=	nv
-_DP_cap_random=	nv
 _DP_cap_sysctl=	nv
 _DP_cap_syslog=	nv
 .if ${MK_OFED} != "no"
@@ -302,6 +303,10 @@ _DP_dpv=	dialog figpar util ncursesw
 _DP_dialog=	ncursesw m
 _DP_cuse=	pthread
 _DP_atf_cxx=	atf_c
+_DP_gtest=	pthread
+_DP_gmock=	gtest
+_DP_gmock_main=	gmock
+_DP_gtest_main=	gtest
 _DP_devstat=	kvm
 _DP_pam=	radius tacplus opie md util
 .if ${MK_KERBEROS} != "no"
@@ -379,6 +384,15 @@ LIBATF_CXX=	${LIBDESTDIR}${LIBDIR_BASE}/libprivateatf-c++.a
 LDADD_atf_c=	-lprivateatf-c
 LDADD_atf_cxx=	-lprivateatf-c++
 
+LIBGMOCK=	${LIBDESTDIR}${LIBDIR_BASE}/libprivategmock.a
+LIBGMOCK_MAIN=	${LIBDESTDIR}${LIBDIR_BASE}/libprivategmock_main.a
+LIBGTEST=	${LIBDESTDIR}${LIBDIR_BASE}/libprivategtest.a
+LIBGTEST_MAIN=	${LIBDESTDIR}${LIBDIR_BASE}/libprivategtest_main.a
+LDADD_gmock=	-lprivategmock
+LDADD_gtest=	-lprivategtest
+LDADD_gmock_main= -lprivategmock_main
+LDADD_gtest_main= -lprivategtest_main
+
 .for _l in ${_PRIVATELIBS}
 LIB${_l:tu}?=	${LIBDESTDIR}${LIBDIR_BASE}/libprivate${_l}.a
 .endfor
@@ -420,6 +434,15 @@ LDADD_${_l}+=	${LDADD_${_d}}
 # atf_cxx
 DPADD_atf_cxx+=	${DPADD_atf_c}
 LDADD_atf_cxx+=	${LDADD_atf_c}
+
+DPADD_gmock+=	${DPADD_gtest}
+LDADD_gmock+=	${LDADD_gtest}
+
+DPADD_gmock_main+=	${DPADD_gmock}
+LDADD_gmock_main+=	${LDADD_gmock}
+
+DPADD_gtest_main+=	${DPADD_gtest}
+LDADD_gtest_main+=	${LDADD_gtest}
 
 # Detect LDADD/DPADD that should be LIBADD, before modifying LDADD here.
 _BADLDADD=
@@ -562,6 +585,10 @@ LIBROKENDIR=	${OBJTOP}/kerberos5/lib/libroken
 LIBWINDDIR=	${OBJTOP}/kerberos5/lib/libwind
 LIBATF_CDIR=	${OBJTOP}/lib/atf/libatf-c
 LIBATF_CXXDIR=	${OBJTOP}/lib/atf/libatf-c++
+LIBGMOCKDIR=	${OBJTOP}/lib/googletest/gmock
+LIBGMOCK_MAINDIR=	${OBJTOP}/lib/googletest/gmock_main
+LIBGTESTDIR=	${OBJTOP}/lib/googletest/gtest
+LIBGTEST_MAINDIR=	${OBJTOP}/lib/googletest/gtest_main
 LIBALIASDIR=	${OBJTOP}/lib/libalias/libalias
 LIBBLACKLISTDIR=	${OBJTOP}/lib/libblacklist
 LIBBLOCKSRUNTIMEDIR=	${OBJTOP}/lib/libblocksruntime
@@ -570,7 +597,6 @@ LIBCASPERDIR=	${OBJTOP}/lib/libcasper/libcasper
 LIBCAP_DNSDIR=	${OBJTOP}/lib/libcasper/services/cap_dns
 LIBCAP_GRPDIR=	${OBJTOP}/lib/libcasper/services/cap_grp
 LIBCAP_PWDDIR=	${OBJTOP}/lib/libcasper/services/cap_pwd
-LIBCAP_RANDOMDIR=	${OBJTOP}/lib/libcasper/services/cap_random
 LIBCAP_SYSCTLDIR=	${OBJTOP}/lib/libcasper/services/cap_sysctl
 LIBCAP_SYSLOGDIR=	${OBJTOP}/lib/libcasper/services/cap_syslog
 LIBBSDXMLDIR=	${OBJTOP}/lib/libexpat

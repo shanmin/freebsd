@@ -152,7 +152,6 @@ __DEFAULT_YES_OPTIONS = \
     OFED \
     OPENSSL \
     PAM \
-    PC_SYSINSTALL \
     PF \
     PKGBOOTSTRAP \
     PMC \
@@ -161,7 +160,6 @@ __DEFAULT_YES_OPTIONS = \
     QUOTAS \
     RADIUS_SUPPORT \
     RBOOTD \
-    REPRODUCIBLE_BUILD \
     RESCUE \
     ROUTED \
     SENDMAIL \
@@ -181,7 +179,6 @@ __DEFAULT_YES_OPTIONS = \
     TELNET \
     TEXTPROC \
     TFTP \
-    TIMED \
     UNBOUND \
     USB \
     UTMPX \
@@ -201,13 +198,15 @@ __DEFAULT_NO_OPTIONS = \
     EXPERIMENTAL \
     GNU_GREP_COMPAT \
     HESIOD \
+    HTTPD \
     LIBSOFT \
     LOADER_FIREWIRE \
     LOADER_FORCE_LE \
     LOADER_VERBOSE \
-    NAND \
+    LOADER_VERIEXEC_PASS_MANIFEST \
     OFED_EXTRA \
     OPENLDAP \
+    REPRODUCIBLE_BUILD \
     RPCBIND_WARMSTART_SUPPORT \
     SHARED_TOOLCHAIN \
     SORT_THREADS \
@@ -261,6 +260,15 @@ __TT=${TARGET}
 __TT=${MACHINE}
 .endif
 
+# Default GOOGLETEST to off for MIPS while LLVM PR 43263 is active.  Part
+# of the fusefs tests trigger excessively long compile times.  It does
+# eventually succeed, but this shouldn't be forced on those building by default.
+.if ${__TT} == "mips"
+__DEFAULT_NO_OPTIONS+=	GOOGLETEST
+.else
+__DEFAULT_YES_OPTIONS+=	GOOGLETEST
+.endif
+
 # All supported backends for LLVM_TARGET_XXX
 __LLVM_TARGETS= \
 		aarch64 \
@@ -269,7 +277,7 @@ __LLVM_TARGETS= \
 		powerpc \
 		sparc \
 		x86
-__LLVM_TARGET_FILT=	C/(amd64|i386)/x86/:S/sparc64/sparc/:S/arm64/aarch64/
+__LLVM_TARGET_FILT=	C/(amd64|i386)/x86/:S/sparc64/sparc/:S/arm64/aarch64/:S/powerpc64/powerpc/
 .for __llt in ${__LLVM_TARGETS}
 # Default the given TARGET's LLVM_TARGET support to the value of MK_CLANG.
 .if ${__TT:${__LLVM_TARGET_FILT}} == ${__llt}
@@ -289,6 +297,7 @@ __DEFAULT_DEPENDENT_OPTIONS+=	LLVM_TARGET_${__llt:${__LLVM_TARGET_FILT}:tu}/LLVM
 .endfor
 
 __DEFAULT_NO_OPTIONS+=LLVM_TARGET_BPF
+__DEFAULT_NO_OPTIONS+=LLVM_TARGET_RISCV
 
 .include <bsd.compiler.mk>
 # If the compiler is not C++11 capable, disable Clang and use GCC instead.
@@ -388,14 +397,20 @@ BROKEN_OPTIONS+=MLX5TOOL
 BROKEN_OPTIONS+=HYPERV
 .endif
 
-# NVME is only x86 and powerpc64
-.if ${__T} != "amd64" && ${__T} != "i386" && ${__T} != "powerpc64"
+# NVME is only aarch64, x86 and powerpc64
+.if ${__T} != "aarch64" && ${__T} != "amd64" && ${__T} != "i386" && ${__T} != "powerpc64"
 BROKEN_OPTIONS+=NVME
 .endif
 
-# PowerPC and Sparc64 need extra crt*.o files
-.if ${__T:Mpowerpc*} || ${__T:Msparc64}
+# Sparc64 need extra crt*.o files
+.if ${__T:Msparc64}
 BROKEN_OPTIONS+=BSD_CRTBEGIN
+.endif
+
+.if ${COMPILER_FEATURES:Mc++11} && (${__T} == "amd64" || ${__T} == "i386")
+__DEFAULT_YES_OPTIONS+=OPENMP
+.else
+__DEFAULT_NO_OPTIONS+=OPENMP
 .endif
 
 .include <bsd.mkopt.mk>
@@ -427,6 +442,7 @@ MK_${var}:=	no
 # Order is somewhat important.
 #
 .if !${COMPILER_FEATURES:Mc++11}
+MK_GOOGLETEST:=	no
 MK_LLVM_LIBUNWIND:=	no
 .endif
 
@@ -507,6 +523,10 @@ MK_FREEBSD_UPDATE:=	no
 MK_DTRACE_TESTS:= no
 .endif
 
+.if ${MK_TESTS_SUPPORT} == "no"
+MK_GOOGLETEST:=	no
+.endif
+
 .if ${MK_ZONEINFO} == "no"
 MK_ZONEINFO_LEAPSECONDS_SUPPORT:= no
 MK_ZONEINFO_OLD_TIMEZONES_SUPPORT:= no
@@ -534,6 +554,10 @@ MK_LLDB:=	no
 MK_CLANG_EXTRAS:= no
 MK_CLANG_FULL:= no
 MK_LLVM_COV:= no
+.endif
+
+.if ${MK_LOADER_VERIEXEC} == "no"
+MK_LOADER_VERIEXEC_PASS_MANIFEST := no
 .endif
 
 #

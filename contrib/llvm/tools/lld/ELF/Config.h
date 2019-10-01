@@ -122,6 +122,7 @@ struct Configuration {
                   uint64_t>
       CallGraphProfile;
   bool AllowMultipleDefinition;
+  bool AllowShlibUndefined;
   bool AndroidPackDynRelocs;
   bool ARMHasBlx = false;
   bool ARMHasMovtMovw = false;
@@ -190,7 +191,7 @@ struct Configuration {
   bool ZExecstack;
   bool ZGlobal;
   bool ZHazardplt;
-  bool ZIfuncnoplt;
+  bool ZIfuncNoplt;
   bool ZInitfirst;
   bool ZInterpose;
   bool ZKeepTextSectionPrefix;

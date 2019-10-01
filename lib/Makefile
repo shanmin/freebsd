@@ -102,7 +102,7 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 # libraries, those libraries should be listed as build order dependencies here.
 
 SUBDIR_DEPEND_geom=	libufs
-SUBDIR_DEPEND_libarchive= libz libbz2 libexpat liblzma libmd
+SUBDIR_DEPEND_libarchive= libz libbz2 libexpat liblzma libmd libzstd
 SUBDIR_DEPEND_libauditdm= libbsm
 SUBDIR_DEPEND_libbsnmp= ${_libnetgraph}
 SUBDIR_DEPEND_libc++:= libcxxrt
@@ -170,10 +170,10 @@ _libcplusplus+=	libc++fs
 .endif
 
 SUBDIR.${MK_EFI}+=	libefivar
+SUBDIR.${MK_GOOGLETEST}+=	googletest
 SUBDIR.${MK_LIBTHR}+=	libthr
 SUBDIR.${MK_LLVM_LIBUNWIND}+=	libgcc_eh
 SUBDIR.${MK_LLVM_LIBUNWIND}+=	libgcc_s
-SUBDIR.${MK_NAND}+=	libnandfs
 SUBDIR.${MK_NETGRAPH}+=	libnetgraph
 SUBDIR.${MK_NIS}+=	libypclnt
 
@@ -195,6 +195,7 @@ _libproc=	libproc
 _librtld_db=	librtld_db
 .endif
 
+SUBDIR.${MK_OPENMP}+=	libomp
 SUBDIR.${MK_OPENSSL}+=	libmp
 SUBDIR.${MK_PMC}+=	libpmc libpmcstat
 SUBDIR.${MK_RADIUS_SUPPORT}+=	libradius

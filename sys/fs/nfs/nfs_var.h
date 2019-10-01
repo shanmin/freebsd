@@ -136,7 +136,7 @@ int nfsrv_checksetattr(vnode_t, struct nfsrv_descript *,
     NFSPROC_T *);
 int nfsrv_checkgetattr(struct nfsrv_descript *, vnode_t,
     struct nfsvattr *, nfsattrbit_t *, NFSPROC_T *);
-int nfsrv_nfsuserdport(struct sockaddr *, u_short, NFSPROC_T *);
+int nfsrv_nfsuserdport(struct nfsuserd_args *, NFSPROC_T *);
 void nfsrv_nfsuserddelport(void);
 void nfsrv_throwawayallstate(NFSPROC_T *);
 int nfsrv_checksequence(struct nfsrv_descript *, uint32_t, uint32_t *,
@@ -162,7 +162,7 @@ void nfsrv_freefilelayouts(fhandle_t *);
 int nfsrv_deldsserver(int, char *, NFSPROC_T *);
 struct nfsdevice *nfsrv_deldsnmp(int, struct nfsmount *, NFSPROC_T *);
 int nfsrv_createdevids(struct nfsd_nfsd_args *, NFSPROC_T *);
-int nfsrv_checkdsattr(struct nfsrv_descript *, vnode_t, NFSPROC_T *);
+int nfsrv_checkdsattr(vnode_t, NFSPROC_T *);
 int nfsrv_copymr(vnode_t, vnode_t, vnode_t, struct nfsdevice *,
     struct pnfsdsfile *, struct pnfsdsfile *, int, struct ucred *, NFSPROC_T *);
 int nfsrv_mdscopymr(char *, char *, char *, char *, int *, char *, NFSPROC_T *,
@@ -371,12 +371,10 @@ void nfsrv_fillattr(struct nfsrv_descript *, struct nfsvattr *);
 void nfsrv_adj(mbuf_t, int, int);
 void nfsrv_postopattr(struct nfsrv_descript *, int, struct nfsvattr *);
 int nfsd_errmap(struct nfsrv_descript *);
-void nfsv4_uidtostr(uid_t, u_char **, int *, NFSPROC_T *);
-int nfsv4_strtouid(struct nfsrv_descript *, u_char *, int, uid_t *,
-    NFSPROC_T *);
-void nfsv4_gidtostr(gid_t, u_char **, int *, NFSPROC_T *);
-int nfsv4_strtogid(struct nfsrv_descript *, u_char *, int, gid_t *,
-    NFSPROC_T *);
+void nfsv4_uidtostr(uid_t, u_char **, int *);
+int nfsv4_strtouid(struct nfsrv_descript *, u_char *, int, uid_t *);
+void nfsv4_gidtostr(gid_t, u_char **, int *);
+int nfsv4_strtogid(struct nfsrv_descript *, u_char *, int, gid_t *);
 int nfsrv_checkuidgid(struct nfsrv_descript *, struct nfsvattr *);
 void nfsrv_fixattr(struct nfsrv_descript *, vnode_t,
     struct nfsvattr *, NFSACL_T *, NFSPROC_T *, nfsattrbit_t *,

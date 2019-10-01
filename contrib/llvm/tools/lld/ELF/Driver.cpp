@@ -299,6 +299,9 @@ static void checkOptions() {
   if (!Config->Relocatable && !Config->DefineCommon)
     error("-no-define-common not supported in non relocatable output");
 
+  if (Config->ZText && Config->ZIfuncNoplt)
+    error("-z text and -z ifunc-noplt may not be used together");
+
   if (Config->Relocatable) {
     if (Config->Shared)
       error("-r and -shared may not be used together");
@@ -348,8 +351,7 @@ static bool getZFlag(opt::InputArgList &Args, StringRef K1, StringRef K2,
 static bool isKnownZFlag(StringRef S) {
   return S == "combreloc" || S == "copyreloc" || S == "defs" ||
          S == "execstack" || S == "global" || S == "hazardplt" ||
-         S == "ifunc-noplt" ||
-         S == "initfirst" || S == "interpose" ||
+         S == "ifunc-noplt" || S == "initfirst" || S == "interpose" ||
          S == "keep-text-section-prefix" || S == "lazy" || S == "muldefs" ||
          S == "nocombreloc" || S == "nocopyreloc" || S == "nodefaultlib" ||
          S == "nodelete" || S == "nodlopen" || S == "noexecstack" ||
@@ -758,6 +760,9 @@ void LinkerDriver::readConfigs(opt::InputArgList &Args) {
       Args.hasFlag(OPT_allow_multiple_definition,
                    OPT_no_allow_multiple_definition, false) ||
       hasZOption(Args, "muldefs");
+  Config->AllowShlibUndefined =
+      Args.hasFlag(OPT_allow_shlib_undefined, OPT_no_allow_shlib_undefined,
+                   Args.hasArg(OPT_shared));
   Config->AuxiliaryList = args::getStrings(Args, OPT_auxiliary);
   Config->Bsymbolic = Args.hasArg(OPT_Bsymbolic);
   Config->BsymbolicFunctions = Args.hasArg(OPT_Bsymbolic_functions);
@@ -872,7 +877,7 @@ void LinkerDriver::readConfigs(opt::InputArgList &Args) {
   Config->ZExecstack = getZFlag(Args, "execstack", "noexecstack", false);
   Config->ZGlobal = hasZOption(Args, "global");
   Config->ZHazardplt = hasZOption(Args, "hazardplt");
-  Config->ZIfuncnoplt = hasZOption(Args, "ifunc-noplt");
+  Config->ZIfuncNoplt = hasZOption(Args, "ifunc-noplt");
   Config->ZInitfirst = hasZOption(Args, "initfirst");
   Config->ZInterpose = hasZOption(Args, "interpose");
   Config->ZKeepTextSectionPrefix = getZFlag(
