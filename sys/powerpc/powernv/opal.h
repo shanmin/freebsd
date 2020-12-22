@@ -91,6 +91,7 @@ int opal_call(uint64_t token, ...);
 #define	OPAL_INT_EOI			124
 #define	OPAL_INT_SET_MFRR		125
 #define	OPAL_PCI_TCE_KILL		126
+#define	OPAL_NMMU_SET_PTCR		127
 #define	OPAL_XIVE_RESET			128
 #define	OPAL_XIVE_GET_IRQ_INFO		129
 #define	OPAL_XIVE_GET_IRQ_CONFIG	130
@@ -129,6 +130,11 @@ int opal_call(uint64_t token, ...);
 #define	OPAL_IGNORE_RID_FUNC_NUMBER	0
 #define	OPAL_COMPARE_RID_FUNC_NUMBER	1
 
+/* For OPAL_PCI_TCE_KILL */
+#define	OPAL_PCI_TCE_KILL_PAGE		0
+#define	OPAL_PCI_TCE_KILL_PE		1
+#define	OPAL_PCI_TCE_KILL_ALL		2
+
 #define	OPAL_SUCCESS			0
 #define	OPAL_PARAMETER			-1
 #define	OPAL_BUSY			-2
@@ -166,6 +172,9 @@ int opal_call(uint64_t token, ...);
 
 #define	OPAL_XIVE_XICS_MODE_EMU	0
 #define	OPAL_XIVE_XICS_MODE_EXP	1
+
+#define	OPAL_XIVE_SYNC_EAS		0x00000001
+#define	OPAL_XIVE_SYNC_QUEUE		0x00000002
 
 #define	OPAL_XIVE_VP_ENABLED		0x00000001
 #define	OPAL_XIVE_VP_SINGLE_ESCALATION	0x00000002
